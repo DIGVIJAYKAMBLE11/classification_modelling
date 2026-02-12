@@ -401,6 +401,98 @@ def ohe_columns(dataframe, target_col, drop_first, max_categories, rare_map_stor
     return result, encode_cols, ohe, rare_map_store
 
 
+def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scoring,
+                       param_grid, gain_top_pct, perm_min_threshold,
+                       add_back_features, extra_drop_features, label=""):
+    """Train XGBoost with GridSearchCV, evaluate, and return results dict.
+
+    Returns dict with keys: best_model, X_train, X_test, y_test, metrics,
+    best_params, feature_drop_info, grid_search.
+    """
+    tag = f" [{label}]" if label else ""
+
+    # ── Train / test split ──────────────────────────────────────────
+    print(f"\n  {tag} Stratified train / test split ...")
+    X = df.drop(columns=[target_col])
+    y = df[target_col]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y
+    )
+    print(f"    Train: {X_train.shape} | Test: {X_test.shape}")
+
+    # ── GridSearchCV ────────────────────────────────────────────────
+    print(f"\n  {tag} XGBoost GridSearchCV ...")
+    neg, pos = np.bincount(y_train.astype(int))
+    scale_pos_weight = neg / pos if pos > 0 else 1
+    print(f"    scale_pos_weight = {scale_pos_weight:.2f}")
+
+    xgb_base = XGBClassifier(
+        scale_pos_weight=scale_pos_weight, use_label_encoder=False,
+        eval_metric="logloss", random_state=random_state, verbosity=0,
+    )
+    skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    grid_search = GridSearchCV(
+        estimator=xgb_base, param_grid=param_grid, scoring=scoring,
+        cv=skf, n_jobs=-1, verbose=1, refit=True,
+    )
+    grid_search.fit(X_train, y_train)
+    best_model = grid_search.best_estimator_
+    print(f"    Best {scoring}: {grid_search.best_score_:.4f}")
+    print(f"    Best params: {grid_search.best_params_}")
+
+    # ── Feature importance & auto-flag ──────────────────────────────
+    print(f"\n  {tag} Feature importance & auto-flag ...")
+    imp = pd.Series(best_model.feature_importances_, index=X_train.columns)
+    perm_result = permutation_importance(
+        best_model, X_test, y_test, n_repeats=10,
+        random_state=random_state, scoring="roc_auc", n_jobs=-1,
+    )
+    perm_imp = pd.Series(perm_result.importances_mean, index=X_test.columns)
+
+    gain_cutoff = np.percentile(imp.values, 100 - gain_top_pct)
+    suspicious = imp.index[(imp >= gain_cutoff) & (perm_imp < perm_min_threshold)].tolist()
+    print(f"    Suspicious features: {suspicious}")
+
+    auto_drop = [f for f in suspicious if f not in add_back_features]
+    final_drop = list(set(auto_drop + extra_drop_features))
+    if final_drop:
+        X_train = X_train.drop(columns=final_drop, errors="ignore")
+        X_test  = X_test.drop(columns=final_drop, errors="ignore")
+        print(f"    Dropped {len(final_drop)} features, retraining ...")
+        best_model.fit(X_train, y_train)
+    print(f"    Final feature count: {X_train.shape[1]}")
+
+    # ── Evaluation metrics ──────────────────────────────────────────
+    print(f"\n  {tag} Dev test metrics ...")
+    y_pred = best_model.predict(X_test)
+    y_prob = best_model.predict_proba(X_test)[:, 1]
+    metrics = {
+        "Accuracy":          accuracy_score(y_test, y_pred),
+        "Balanced Accuracy": balanced_accuracy_score(y_test, y_pred),
+        "F1 Score":          f1_score(y_test, y_pred),
+        "AUC (ROC)":         roc_auc_score(y_test, y_prob),
+        "Gini":              2 * roc_auc_score(y_test, y_prob) - 1,
+    }
+    for name, val in metrics.items():
+        print(f"    {name:<20s}  {val:.4f}")
+
+    return {
+        "best_model": best_model,
+        "X_train": X_train,
+        "X_test": X_test,
+        "y_test": y_test,
+        "metrics": metrics,
+        "best_params": grid_search.best_params_,
+        "feature_drop_info": {
+            "auto_flagged_suspicious": suspicious,
+            "added_back": add_back_features,
+            "extra_manual_drops": extra_drop_features,
+            "final_dropped": final_drop,
+        },
+        "grid_search": grid_search,
+    }
+
+
 def score_new_data(raw_df, artefact_dir, ext_raw_df=None):
     """Score raw data using saved artefacts. Identical to deployment.
 
@@ -556,6 +648,9 @@ def main():
     main_feature_cols = [c for c in df.columns if c != TARGET_COL]
     print(f"  Shape after OHE: {df.shape}")
 
+    # Save main-only dataframe before external augmentation
+    df_main_only = df.copy()
+
     # ── 8. External columns pipeline ───────────────────────────────
     ext_bin_edges_store = {}
     ext_rare_mappings = {}
@@ -652,86 +747,82 @@ def main():
         json.dump({"holdout_pct": HOLDOUT_PCT, "holdout_seed": HOLDOUT_SEED,
                     "holdout_rows": len(holdout_raw), "dev_rows": len(df)}, f, indent=2)
 
-    # ── 10. Train / test split ─────────────────────────────────────
-    print("\n[10] Stratified train / test split ...")
-    X = df.drop(columns=[TARGET_COL])
-    y = df[TARGET_COL]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
+    # ══════════════════════════════════════════════════════════════
+    #  PHASE A — MAIN DATA ONLY (before external augmentation)
+    # ══════════════════════════════════════════════════════════════
+    print("\n" + "=" * 60)
+    print("  PHASE A: Training on MAIN DATA ONLY")
+    print("=" * 60)
+
+    main_result = train_and_evaluate(
+        df_main_only, TARGET_COL, TEST_SIZE, RANDOM_STATE, CV_FOLDS, SCORING,
+        PARAM_GRID, GAIN_TOP_PCT, PERM_MIN_THRESHOLD,
+        ADD_BACK_FEATURES, EXTRA_DROP_FEATURES, label="MAIN ONLY",
     )
-    print(f"  Train: {X_train.shape} | Test: {X_test.shape}")
 
-    # ── 11. GridSearchCV ───────────────────────────────────────────
-    print("\n[11] XGBoost GridSearchCV ...")
-    neg, pos = np.bincount(y_train.astype(int))
-    scale_pos_weight = neg / pos if pos > 0 else 1
-    print(f"  scale_pos_weight = {scale_pos_weight:.2f}")
+    # Save main-only artefacts
+    print("\n  Saving MAIN-ONLY model & metrics ...")
+    joblib.dump(main_result["best_model"], os.path.join(ARTEFACT_DIR, "xgb_model_main_only.joblib"))
+    with open(os.path.join(ARTEFACT_DIR, "final_features_main_only.json"), "w") as f:
+        json.dump(main_result["X_train"].columns.tolist(), f, indent=2)
+    with open(os.path.join(ARTEFACT_DIR, "test_metrics_main_only.json"), "w") as f:
+        json.dump(main_result["metrics"], f, indent=2)
+    with open(os.path.join(ARTEFACT_DIR, "best_params_main_only.json"), "w") as f:
+        json.dump(main_result["best_params"], f, indent=2)
+    with open(os.path.join(ARTEFACT_DIR, "dropped_features_main_only.json"), "w") as f:
+        json.dump(main_result["feature_drop_info"], f, indent=2)
 
-    xgb_base = XGBClassifier(
-        scale_pos_weight=scale_pos_weight, use_label_encoder=False,
-        eval_metric="logloss", random_state=RANDOM_STATE, verbosity=0,
-    )
-    skf = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
-    grid_search = GridSearchCV(
-        estimator=xgb_base, param_grid=PARAM_GRID, scoring=SCORING,
-        cv=skf, n_jobs=-1, verbose=1, refit=True,
-    )
-    grid_search.fit(X_train, y_train)
-    best_model = grid_search.best_estimator_
-    print(f"  Best {SCORING}: {grid_search.best_score_:.4f}")
-    print(f"  Best params: {grid_search.best_params_}")
+    # ══════════════════════════════════════════════════════════════
+    #  PHASE B — AUGMENTED (main + external data)
+    # ══════════════════════════════════════════════════════════════
+    if ext_df is not None:
+        print("\n" + "=" * 60)
+        print("  PHASE B: Training on MAIN + EXTERNAL DATA (augmented)")
+        print("=" * 60)
 
-    # ── 12. Feature importance ─────────────────────────────────────
-    print("\n[12] Feature importance & auto-flag ...")
-    imp = pd.Series(best_model.feature_importances_, index=X_train.columns)
-    perm_result = permutation_importance(
-        best_model, X_test, y_test, n_repeats=10,
-        random_state=RANDOM_STATE, scoring="roc_auc", n_jobs=-1,
-    )
-    perm_imp = pd.Series(perm_result.importances_mean, index=X_test.columns)
+        # df already has main + external concatenated from step 8
+        aug_result = train_and_evaluate(
+            df, TARGET_COL, TEST_SIZE, RANDOM_STATE, CV_FOLDS, SCORING,
+            PARAM_GRID, GAIN_TOP_PCT, PERM_MIN_THRESHOLD,
+            ADD_BACK_FEATURES, EXTRA_DROP_FEATURES, label="AUGMENTED",
+        )
 
-    gain_cutoff = np.percentile(imp.values, 100 - GAIN_TOP_PCT)
-    suspicious = imp.index[(imp >= gain_cutoff) & (perm_imp < PERM_MIN_THRESHOLD)].tolist()
-    print(f"  Suspicious features: {suspicious}")
+        # Save augmented artefacts
+        print("\n  Saving AUGMENTED model & metrics ...")
+        joblib.dump(aug_result["best_model"], os.path.join(ARTEFACT_DIR, "xgb_model.joblib"))
+        with open(os.path.join(ARTEFACT_DIR, "final_features.json"), "w") as f:
+            json.dump(aug_result["X_train"].columns.tolist(), f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "test_metrics_augmented.json"), "w") as f:
+            json.dump(aug_result["metrics"], f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "best_params_augmented.json"), "w") as f:
+            json.dump(aug_result["best_params"], f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "dropped_features_augmented.json"), "w") as f:
+            json.dump(aug_result["feature_drop_info"], f, indent=2)
 
-    auto_drop = [f for f in suspicious if f not in ADD_BACK_FEATURES]
-    final_drop = list(set(auto_drop + EXTRA_DROP_FEATURES))
-    if final_drop:
-        X_train = X_train.drop(columns=final_drop, errors="ignore")
-        X_test  = X_test.drop(columns=final_drop, errors="ignore")
-        print(f"  Dropped {len(final_drop)} features, retraining ...")
-        best_model.fit(X_train, y_train)
-    print(f"  Final feature count: {X_train.shape[1]}")
+        # Use augmented model for holdout & final artefacts
+        best_model = aug_result["best_model"]
+        metrics = aug_result["metrics"]
+        X_train = aug_result["X_train"]
+    else:
+        print("\n  No external data — skipping PHASE B.")
+        # Use main-only results as the final model
+        best_model = main_result["best_model"]
+        metrics = main_result["metrics"]
+        X_train = main_result["X_train"]
 
-    # ── 13. Evaluation metrics ─────────────────────────────────────
-    print("\n[13] Dev test metrics ...")
-    y_pred = best_model.predict(X_test)
-    y_prob = best_model.predict_proba(X_test)[:, 1]
-    metrics = {
-        "Accuracy":          accuracy_score(y_test, y_pred),
-        "Balanced Accuracy": balanced_accuracy_score(y_test, y_pred),
-        "F1 Score":          f1_score(y_test, y_pred),
-        "AUC (ROC)":         roc_auc_score(y_test, y_prob),
-        "Gini":              2 * roc_auc_score(y_test, y_prob) - 1,
-    }
-    for name, val in metrics.items():
-        print(f"  {name:<20s}  {val:.4f}")
+        # Save as the primary artefacts too
+        joblib.dump(best_model, os.path.join(ARTEFACT_DIR, "xgb_model.joblib"))
+        with open(os.path.join(ARTEFACT_DIR, "final_features.json"), "w") as f:
+            json.dump(X_train.columns.tolist(), f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "test_metrics.json"), "w") as f:
+            json.dump(metrics, f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "best_params.json"), "w") as f:
+            json.dump(main_result["best_params"], f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "dropped_features.json"), "w") as f:
+            json.dump(main_result["feature_drop_info"], f, indent=2)
 
-    # ── 14. Save model ─────────────────────────────────────────────
-    print("\n[14] Saving model & artefacts ...")
-    joblib.dump(best_model, os.path.join(ARTEFACT_DIR, "xgb_model.joblib"))
-    with open(os.path.join(ARTEFACT_DIR, "final_features.json"), "w") as f:
-        json.dump(X_train.columns.tolist(), f, indent=2)
-    with open(os.path.join(ARTEFACT_DIR, "test_metrics.json"), "w") as f:
-        json.dump(metrics, f, indent=2)
-    with open(os.path.join(ARTEFACT_DIR, "best_params.json"), "w") as f:
-        json.dump(grid_search.best_params_, f, indent=2)
-    with open(os.path.join(ARTEFACT_DIR, "dropped_features.json"), "w") as f:
-        json.dump({"auto_flagged_suspicious": suspicious, "added_back": ADD_BACK_FEATURES,
-                    "extra_manual_drops": EXTRA_DROP_FEATURES, "final_dropped": final_drop}, f, indent=2)
-
-    # ── 15. Holdout evaluation ─────────────────────────────────────
-    print("\n[15] Holdout (out-of-sample) evaluation ...")
+    # ── Holdout evaluation ──────────────────────────────────────────
+    print("\n[Holdout] Out-of-sample evaluation ...")
 
     # Main columns from holdout
     holdout_df = holdout_raw.copy()
@@ -761,13 +852,18 @@ def main():
         "Gini":              2 * roc_auc_score(y_holdout, h_prob) - 1,
     }
 
-    print("\n  " + "=" * 55)
-    print("  DEV TEST vs HOLDOUT")
-    print("  " + "=" * 55)
-    for name in metrics:
-        diff = holdout_metrics[name] - metrics[name]
-        print(f"  {name:<20s}  Dev={metrics[name]:.4f}  Holdout={holdout_metrics[name]:.4f}  Diff={diff:+.4f}")
-    print("  " + "=" * 55)
+    # ── Comparison table ────────────────────────────────────────────
+    print("\n  " + "=" * 75)
+    print("  MAIN ONLY vs AUGMENTED vs HOLDOUT")
+    print("  " + "=" * 75)
+    main_metrics = main_result["metrics"]
+    aug_metrics = metrics  # augmented if available, else same as main
+    for name in main_metrics:
+        main_val = main_metrics[name]
+        aug_val  = aug_metrics[name]
+        hold_val = holdout_metrics[name]
+        print(f"  {name:<20s}  Main={main_val:.4f}  Aug={aug_val:.4f}  Holdout={hold_val:.4f}")
+    print("  " + "=" * 75)
 
     with open(os.path.join(ARTEFACT_DIR, "holdout_metrics.json"), "w") as f:
         json.dump(holdout_metrics, f, indent=2)
