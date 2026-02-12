@@ -143,6 +143,7 @@ DROP_LOW_VARIATION = [
 N_BINS           = 5
 BINNING_STRATEGY = "quantile"
 CUSTOM_BINS      = {}
+BINNING_FALLBACK = "categorical"  # "categorical" = move problem columns to OHE, "drop" = remove them
 
 # ── OHE ────────────────────────────────────────────────────────────
 DROP_FIRST     = False
@@ -225,6 +226,7 @@ EXT_DROP_LOW_VARIATION    = []
 EXT_N_BINS                = N_BINS
 EXT_BINNING_STRATEGY      = BINNING_STRATEGY
 EXT_CUSTOM_BINS           = {}
+EXT_BINNING_FALLBACK      = BINNING_FALLBACK
 EXT_DROP_FIRST            = DROP_FIRST
 EXT_MAX_CATEGORIES        = MAX_CATEGORIES
 
@@ -297,23 +299,74 @@ def identify_col_types(dataframe, feature_cols):
     return cat, num
 
 
-def bin_columns(dataframe, num_cols, n_bins, strategy, custom_bins, bin_store):
+def bin_columns(dataframe, num_cols, n_bins, strategy, custom_bins, bin_store,
+                fallback="categorical"):
+    """Bin numerical columns. Columns that fail binning are handled by fallback.
+
+    fallback: "categorical" moves problem columns to categorical (OHE),
+              "drop" removes them entirely.
+    Returns: dataframe, bin_store, moved_to_cat, dropped
+    """
+    moved_to_cat = []
+    dropped = []
+    successfully_binned = []
+
     for col in num_cols:
         series = dataframe[col].dropna()
-        if col in custom_bins:
-            edges = custom_bins[col]
-            dataframe[col + "_bin"] = pd.cut(dataframe[col], bins=edges, labels=False, include_lowest=True)
-            bin_store[col] = {"type": "custom", "edges": edges}
-        else:
-            binner = KBinsDiscretizer(n_bins=n_bins, encode="ordinal", strategy=strategy, subsample=None)
-            valid_mask = dataframe[col].notna()
-            dataframe.loc[valid_mask, col + "_bin"] = binner.fit_transform(
-                dataframe.loc[valid_mask, [col]]
-            ).ravel()
-            bin_store[col] = {"type": strategy, "edges": binner.bin_edges_[0].tolist(), "n_bins": n_bins}
-        print(f"  Binned: {col}")
-    dataframe.drop(columns=num_cols, inplace=True)
-    return dataframe, bin_store
+
+        # Pre-check: constant or single-value columns cannot be binned
+        if series.nunique() < 2:
+            if fallback == "categorical":
+                moved_to_cat.append(col)
+                print(f"  WARNING: {col} has {series.nunique()} unique value(s) — moved to categorical")
+            else:
+                dropped.append(col)
+                print(f"  WARNING: {col} has {series.nunique()} unique value(s) — dropped")
+            continue
+
+        # Pre-check: fewer unique values than requested bins
+        if series.nunique() < n_bins and col not in custom_bins:
+            if fallback == "categorical":
+                moved_to_cat.append(col)
+                print(f"  WARNING: {col} has only {series.nunique()} unique values (< {n_bins} bins) — moved to categorical")
+            else:
+                dropped.append(col)
+                print(f"  WARNING: {col} has only {series.nunique()} unique values (< {n_bins} bins) — dropped")
+            continue
+
+        try:
+            if col in custom_bins:
+                edges = custom_bins[col]
+                dataframe[col + "_bin"] = pd.cut(dataframe[col], bins=edges, labels=False, include_lowest=True)
+                bin_store[col] = {"type": "custom", "edges": edges}
+            else:
+                binner = KBinsDiscretizer(n_bins=n_bins, encode="ordinal", strategy=strategy, subsample=None)
+                valid_mask = dataframe[col].notna()
+                dataframe.loc[valid_mask, col + "_bin"] = binner.fit_transform(
+                    dataframe.loc[valid_mask, [col]]
+                ).ravel()
+                bin_store[col] = {"type": strategy, "edges": binner.bin_edges_[0].tolist(), "n_bins": n_bins}
+            successfully_binned.append(col)
+            print(f"  Binned: {col}")
+        except Exception as e:
+            if fallback == "categorical":
+                moved_to_cat.append(col)
+                print(f"  WARNING: {col} failed binning ({e}) — moved to categorical")
+            else:
+                dropped.append(col)
+                print(f"  WARNING: {col} failed binning ({e}) — dropped")
+            # Clean up partial bin column if created
+            if col + "_bin" in dataframe.columns:
+                dataframe.drop(columns=[col + "_bin"], inplace=True)
+
+    # Drop originals of successfully binned columns
+    dataframe.drop(columns=successfully_binned, inplace=True)
+    # Drop columns marked for removal
+    if dropped:
+        dataframe.drop(columns=dropped, inplace=True)
+    # Columns moved to categorical stay in the dataframe as-is
+
+    return dataframe, bin_store, moved_to_cat, dropped
 
 
 def ohe_columns(dataframe, target_col, drop_first, max_categories, rare_map_store):
@@ -474,7 +527,17 @@ def main():
     # ── 6. Binning ─────────────────────────────────────────────────
     print("\n[6] Binning numerical columns ...")
     bin_edges_store = {}
-    df, bin_edges_store = bin_columns(df, num_cols, N_BINS, BINNING_STRATEGY, CUSTOM_BINS, bin_edges_store)
+    df, bin_edges_store, binning_moved_to_cat, binning_dropped = bin_columns(
+        df, num_cols, N_BINS, BINNING_STRATEGY, CUSTOM_BINS, bin_edges_store,
+        fallback=BINNING_FALLBACK,
+    )
+    if binning_moved_to_cat:
+        cat_cols.extend(binning_moved_to_cat)
+        num_cols = [c for c in num_cols if c not in binning_moved_to_cat]
+        print(f"  Moved to categorical: {binning_moved_to_cat}")
+    if binning_dropped:
+        num_cols = [c for c in num_cols if c not in binning_dropped]
+        print(f"  Dropped (binning fallback): {binning_dropped}")
 
     # ── 7. OHE ─────────────────────────────────────────────────────
     print("\n[7] One-hot encoding ...")
@@ -523,9 +586,17 @@ def main():
             ext_cat_cols, ext_num_cols = identify_col_types(ext_df, ext_feature_cols)
             print(f"  Ext categorical: {len(ext_cat_cols)} | Ext numerical: {len(ext_num_cols)}")
             if ext_num_cols:
-                ext_df, ext_bin_edges_store = bin_columns(
-                    ext_df, ext_num_cols, EXT_N_BINS, EXT_BINNING_STRATEGY, EXT_CUSTOM_BINS, ext_bin_edges_store
+                ext_df, ext_bin_edges_store, ext_binning_moved, ext_binning_dropped = bin_columns(
+                    ext_df, ext_num_cols, EXT_N_BINS, EXT_BINNING_STRATEGY, EXT_CUSTOM_BINS, ext_bin_edges_store,
+                    fallback=EXT_BINNING_FALLBACK,
                 )
+                if ext_binning_moved:
+                    ext_cat_cols.extend(ext_binning_moved)
+                    ext_num_cols = [c for c in ext_num_cols if c not in ext_binning_moved]
+                    print(f"  Ext moved to categorical: {ext_binning_moved}")
+                if ext_binning_dropped:
+                    ext_num_cols = [c for c in ext_num_cols if c not in ext_binning_dropped]
+                    print(f"  Ext dropped (binning fallback): {ext_binning_dropped}")
             ext_df, ext_encode_cols, ext_ohe, ext_rare_mappings = ohe_columns(
                 ext_df, TARGET_COL, EXT_DROP_FIRST, EXT_MAX_CATEGORIES, ext_rare_mappings
             )
@@ -557,6 +628,8 @@ def main():
     col_meta = {
         "original_cat_cols": cat_cols, "original_num_cols": num_cols,
         "encode_cols": encode_cols, "main_feature_cols": main_feature_cols,
+        "binning_moved_to_cat": binning_moved_to_cat,
+        "binning_dropped": binning_dropped,
         "ext_cat_cols": ext_cat_cols, "ext_num_cols": ext_num_cols,
         "ext_encode_cols": ext_encode_cols,
         "ext_columns": EXT_COLUMNS if EXT_COLUMNS else [],
