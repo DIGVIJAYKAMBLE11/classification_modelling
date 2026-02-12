@@ -895,47 +895,86 @@ def main():
         json.dump(holdout_aug_metrics, f, indent=2)
 
     # ── Predictor comparison ───────────────────────────────────────
-    main_feats = set(main_result["X_train"].columns.tolist())
-    aug_feats  = set(aug_result["X_train"].columns.tolist()) if ext_df is not None else main_feats
+    main_feats = sorted(main_result["X_train"].columns.tolist())
+    aug_feats  = sorted(aug_result["X_train"].columns.tolist()) if ext_df is not None else main_feats
+    main_dropped = main_result["feature_drop_info"]["final_dropped"]
+    aug_dropped  = aug_result["feature_drop_info"]["final_dropped"] if ext_df is not None else main_dropped
 
-    common   = sorted(main_feats & aug_feats)
-    only_main = sorted(main_feats - aug_feats)
-    only_aug  = sorted(aug_feats - main_feats)
+    # Derive original (pre-OHE) predictor names from the encoded feature names.
+    # OHE features look like "colname_value"; we recover the base column name.
+    main_encode = set(encode_cols)
+    ext_encode  = set(ext_encode_cols) if ext_df is not None else set()
+    all_encode  = main_encode | ext_encode
+
+    def _base_predictors(ohe_features, encode_columns):
+        """Map OHE feature names back to original column names."""
+        bases = set()
+        for feat in ohe_features:
+            matched = False
+            for col in encode_columns:
+                if feat == col or feat.startswith(col + "_"):
+                    bases.add(col)
+                    matched = True
+                    break
+            if not matched:
+                bases.add(feat)
+        return bases
+
+    main_base = sorted(_base_predictors(main_feats, all_encode))
+    aug_base  = sorted(_base_predictors(aug_feats, all_encode))
+    main_drop_base = sorted(_base_predictors(main_dropped, all_encode))
+    aug_drop_base  = sorted(_base_predictors(aug_dropped, all_encode))
+
+    common_base   = sorted(set(main_base) & set(aug_base))
+    only_main_base = sorted(set(main_base) - set(aug_base))
+    only_aug_base  = sorted(set(aug_base) - set(main_base))
 
     print("\n  " + "=" * 100)
-    print("  PREDICTORS USED IN EACH MODEL")
+    print("  PREDICTORS USED IN EACH MODEL  (original column names)")
     print("  " + "=" * 100)
 
-    print(f"\n  MAIN-ONLY model : {len(main_feats)} predictors")
-    print(f"  AUGMENTED model : {len(aug_feats)} predictors")
-    print(f"  Common          : {len(common)}")
-    print(f"  Only in MAIN    : {len(only_main)}")
-    print(f"  Only in AUG     : {len(only_aug)}")
+    print(f"\n  MAIN-ONLY model : {len(main_base)} predictors  ({len(main_feats)} OHE features)")
+    print(f"  AUGMENTED model : {len(aug_base)} predictors  ({len(aug_feats)} OHE features)")
+    print(f"  Common          : {len(common_base)}")
+    print(f"  Only in MAIN    : {len(only_main_base)}")
+    print(f"  Only in AUG     : {len(only_aug_base)}")
 
-    if common:
-        print(f"\n  -- Common predictors ({len(common)}) --")
-        for i, f_name in enumerate(common, 1):
+    print(f"\n  -- MAIN-ONLY : used ({len(main_base)}) --")
+    for i, f_name in enumerate(main_base, 1):
+        print(f"     {i:>3d}. {f_name}")
+
+    if main_drop_base:
+        print(f"\n  -- MAIN-ONLY : dropped ({len(main_drop_base)}) --")
+        for i, f_name in enumerate(main_drop_base, 1):
             print(f"     {i:>3d}. {f_name}")
 
-    if only_main:
-        print(f"\n  -- Only in MAIN-ONLY ({len(only_main)}) --")
-        for i, f_name in enumerate(only_main, 1):
+    print(f"\n  -- AUGMENTED : used ({len(aug_base)}) --")
+    for i, f_name in enumerate(aug_base, 1):
+        print(f"     {i:>3d}. {f_name}")
+
+    if aug_drop_base:
+        print(f"\n  -- AUGMENTED : dropped ({len(aug_drop_base)}) --")
+        for i, f_name in enumerate(aug_drop_base, 1):
             print(f"     {i:>3d}. {f_name}")
 
-    if only_aug:
-        print(f"\n  -- Only in AUGMENTED ({len(only_aug)}) --")
-        for i, f_name in enumerate(only_aug, 1):
+    if only_aug_base:
+        print(f"\n  -- Only in AUGMENTED (external predictors) ({len(only_aug_base)}) --")
+        for i, f_name in enumerate(only_aug_base, 1):
             print(f"     {i:>3d}. {f_name}")
 
     print("  " + "=" * 100)
 
     # Save predictor comparison
     predictor_comparison = {
-        "main_only_predictors": sorted(main_feats),
-        "augmented_predictors": sorted(aug_feats),
-        "common": common,
-        "only_in_main": only_main,
-        "only_in_augmented": only_aug,
+        "main_only_used": main_base,
+        "main_only_dropped": main_drop_base,
+        "augmented_used": aug_base,
+        "augmented_dropped": aug_drop_base,
+        "common": common_base,
+        "only_in_main": only_main_base,
+        "only_in_augmented": only_aug_base,
+        "main_only_ohe_features": main_feats,
+        "augmented_ohe_features": aug_feats,
     }
     with open(os.path.join(ARTEFACT_DIR, "predictor_comparison.json"), "w") as fpc:
         json.dump(predictor_comparison, fpc, indent=2)
