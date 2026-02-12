@@ -282,7 +282,7 @@ def variation_analysis(dataframe, columns, target_col, threshold):
         if dataframe[col].nunique() < 2:
             scores[col] = 0.0
             continue
-        if dataframe[col].dtype in ["object", "category"] or dataframe[col].nunique() <= 10:
+        if not pd.api.types.is_numeric_dtype(dataframe[col]) or dataframe[col].nunique() <= 10:
             scores[col] = cramers_v(dataframe[col].fillna("__NULL__"), dataframe[target_col])
         else:
             classes = dataframe[target_col].unique()
