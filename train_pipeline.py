@@ -490,6 +490,10 @@ def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scorin
             "final_dropped": final_drop,
         },
         "grid_search": grid_search,
+        "xgb_gain": imp,
+        "perm_importance": perm_imp,
+        "gain_cutoff": gain_cutoff,
+        "perm_min_threshold": perm_min_threshold,
     }
 
 
@@ -894,90 +898,117 @@ def main():
     with open(os.path.join(ARTEFACT_DIR, "holdout_metrics.json"), "w") as f:
         json.dump(holdout_aug_metrics, f, indent=2)
 
-    # ── Predictor comparison ───────────────────────────────────────
-    main_feats = sorted(main_result["X_train"].columns.tolist())
-    aug_feats  = sorted(aug_result["X_train"].columns.tolist()) if ext_df is not None else main_feats
-    main_dropped = main_result["feature_drop_info"]["final_dropped"]
-    aug_dropped  = aug_result["feature_drop_info"]["final_dropped"] if ext_df is not None else main_dropped
+    # ── Predictor report (CSV for sharing) ────────────────────────
+    def _build_report(result, label, encode_columns):
+        """Build a per-OHE-feature report with importance, status & drop reason."""
+        used_feats   = result["X_train"].columns.tolist()
+        drop_info    = result["feature_drop_info"]
+        gain         = result["xgb_gain"]          # Series — all features (pre-drop)
+        perm         = result["perm_importance"]    # Series — all features (pre-drop)
+        gain_cut     = result["gain_cutoff"]
+        perm_thresh  = result["perm_min_threshold"]
+        suspicious   = set(drop_info["auto_flagged_suspicious"])
+        added_back   = set(drop_info["added_back"])
+        extra_manual = set(drop_info["extra_manual_drops"])
+        final_dropped = set(drop_info["final_dropped"])
 
-    # Derive original (pre-OHE) predictor names from the encoded feature names.
-    # OHE features look like "colname_value"; we recover the base column name.
-    main_encode = set(encode_cols)
-    ext_encode  = set(ext_encode_cols) if ext_df is not None else set()
-    all_encode  = main_encode | ext_encode
+        all_feats = sorted(set(gain.index.tolist()) | set(perm.index.tolist()))
+        rows = []
+        for feat in all_feats:
+            g = gain.get(feat, np.nan)
+            p = perm.get(feat, np.nan)
+            status = "USED" if feat in used_feats else "DROPPED"
 
-    def _base_predictors(ohe_features, encode_columns):
-        """Map OHE feature names back to original column names."""
-        bases = set()
-        for feat in ohe_features:
-            matched = False
+            # Determine drop reason
+            reason = ""
+            if feat in final_dropped:
+                if feat in extra_manual:
+                    reason = "Manual drop (EXTRA_DROP_FEATURES)"
+                elif feat in suspicious and feat not in added_back:
+                    reason = (f"Auto-flagged: high XGBoost gain (>= {gain_cut:.6f}) "
+                              f"but perm importance < {perm_thresh}")
+                else:
+                    reason = "Auto-flagged suspicious"
+
+            # Map back to original column name
+            base_col = feat
             for col in encode_columns:
                 if feat == col or feat.startswith(col + "_"):
-                    bases.add(col)
-                    matched = True
+                    base_col = col
                     break
-            if not matched:
-                bases.add(feat)
-        return bases
 
-    main_base = sorted(_base_predictors(main_feats, all_encode))
-    aug_base  = sorted(_base_predictors(aug_feats, all_encode))
-    main_drop_base = sorted(_base_predictors(main_dropped, all_encode))
-    aug_drop_base  = sorted(_base_predictors(aug_dropped, all_encode))
+            rows.append({
+                "model": label,
+                "ohe_feature": feat,
+                "original_column": base_col,
+                "status": status,
+                "xgb_gain": round(g, 6) if not np.isnan(g) else "",
+                "xgb_gain_rank": "",
+                "perm_importance_auc_drop": round(p, 6) if not np.isnan(p) else "",
+                "perm_importance_rank": "",
+                "drop_reason": reason,
+            })
 
-    common_base   = sorted(set(main_base) & set(aug_base))
-    only_main_base = sorted(set(main_base) - set(aug_base))
-    only_aug_base  = sorted(set(aug_base) - set(main_base))
+        rdf = pd.DataFrame(rows)
+        # Compute ranks only for non-empty values
+        mask_g = rdf["xgb_gain"] != ""
+        rdf.loc[mask_g, "xgb_gain_rank"] = (
+            rdf.loc[mask_g, "xgb_gain"].astype(float)
+            .rank(ascending=False).astype(int)
+        )
+        mask_p = rdf["perm_importance_auc_drop"] != ""
+        rdf.loc[mask_p, "perm_importance_rank"] = (
+            rdf.loc[mask_p, "perm_importance_auc_drop"].astype(float)
+            .rank(ascending=False).astype(int)
+        )
+        return rdf
+
+    main_encode_set = set(encode_cols)
+    ext_encode_set  = set(ext_encode_cols) if ext_df is not None else set()
+    all_encode_set  = main_encode_set | ext_encode_set
+
+    report_main = _build_report(main_result, "MAIN_ONLY", all_encode_set)
+    report_aug  = _build_report(aug_result, "AUGMENTED", all_encode_set) if ext_df is not None else None
+
+    if report_aug is not None:
+        report_full = pd.concat([report_main, report_aug], ignore_index=True)
+    else:
+        report_full = report_main
+
+    report_path = os.path.join(ARTEFACT_DIR, "predictor_report.csv")
+    report_full.to_csv(report_path, index=False)
+
+    # ── Console summary ───────────────────────────────────────────
+    main_used = report_main[report_main["status"] == "USED"]
+    main_drop = report_main[report_main["status"] == "DROPPED"]
+    print("\n  " + "=" * 100)
+    print("  PREDICTOR REPORT  (saved to predictor_report.csv)")
+    print("  " + "=" * 100)
+    print(f"\n  MAIN-ONLY model : {len(main_used)} used, {len(main_drop)} dropped")
+    print(f"    Original columns used   : {sorted(main_used['original_column'].unique())}")
+    print(f"    Original columns dropped : {sorted(main_drop['original_column'].unique())}")
+    if len(main_drop) > 0:
+        print(f"    Drop reasons:")
+        for _, r in main_drop.iterrows():
+            print(f"      - {r['ohe_feature']:<45s}  {r['drop_reason']}")
+
+    if report_aug is not None:
+        aug_used = report_aug[report_aug["status"] == "USED"]
+        aug_drop = report_aug[report_aug["status"] == "DROPPED"]
+        print(f"\n  AUGMENTED model : {len(aug_used)} used, {len(aug_drop)} dropped")
+        print(f"    Original columns used   : {sorted(aug_used['original_column'].unique())}")
+        print(f"    Original columns dropped : {sorted(aug_drop['original_column'].unique())}")
+        if len(aug_drop) > 0:
+            print(f"    Drop reasons:")
+            for _, r in aug_drop.iterrows():
+                print(f"      - {r['ohe_feature']:<45s}  {r['drop_reason']}")
 
     print("\n  " + "=" * 100)
-    print("  PREDICTORS USED IN EACH MODEL  (original column names)")
+    print(f"  Full report: {report_path}")
+    print(f"  Columns: model | ohe_feature | original_column | status |")
+    print(f"           xgb_gain | xgb_gain_rank | perm_importance_auc_drop |")
+    print(f"           perm_importance_rank | drop_reason")
     print("  " + "=" * 100)
-
-    print(f"\n  MAIN-ONLY model : {len(main_base)} predictors  ({len(main_feats)} OHE features)")
-    print(f"  AUGMENTED model : {len(aug_base)} predictors  ({len(aug_feats)} OHE features)")
-    print(f"  Common          : {len(common_base)}")
-    print(f"  Only in MAIN    : {len(only_main_base)}")
-    print(f"  Only in AUG     : {len(only_aug_base)}")
-
-    print(f"\n  -- MAIN-ONLY : used ({len(main_base)}) --")
-    for i, f_name in enumerate(main_base, 1):
-        print(f"     {i:>3d}. {f_name}")
-
-    if main_drop_base:
-        print(f"\n  -- MAIN-ONLY : dropped ({len(main_drop_base)}) --")
-        for i, f_name in enumerate(main_drop_base, 1):
-            print(f"     {i:>3d}. {f_name}")
-
-    print(f"\n  -- AUGMENTED : used ({len(aug_base)}) --")
-    for i, f_name in enumerate(aug_base, 1):
-        print(f"     {i:>3d}. {f_name}")
-
-    if aug_drop_base:
-        print(f"\n  -- AUGMENTED : dropped ({len(aug_drop_base)}) --")
-        for i, f_name in enumerate(aug_drop_base, 1):
-            print(f"     {i:>3d}. {f_name}")
-
-    if only_aug_base:
-        print(f"\n  -- Only in AUGMENTED (external predictors) ({len(only_aug_base)}) --")
-        for i, f_name in enumerate(only_aug_base, 1):
-            print(f"     {i:>3d}. {f_name}")
-
-    print("  " + "=" * 100)
-
-    # Save predictor comparison
-    predictor_comparison = {
-        "main_only_used": main_base,
-        "main_only_dropped": main_drop_base,
-        "augmented_used": aug_base,
-        "augmented_dropped": aug_drop_base,
-        "common": common_base,
-        "only_in_main": only_main_base,
-        "only_in_augmented": only_aug_base,
-        "main_only_ohe_features": main_feats,
-        "augmented_ohe_features": aug_feats,
-    }
-    with open(os.path.join(ARTEFACT_DIR, "predictor_comparison.json"), "w") as fpc:
-        json.dump(predictor_comparison, fpc, indent=2)
 
     print(f"\nAll artefacts saved to: {ARTEFACT_DIR}")
     print("Done.")
