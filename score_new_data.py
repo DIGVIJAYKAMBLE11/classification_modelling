@@ -4,9 +4,13 @@ Score New Data — Deployment Script
 Loads saved artefacts and scores raw data through the same pipeline
 used during training.
 
+All data (main + external columns) is expected in a single CSV file.
+The script automatically splits the columns into main and external
+based on the saved column_metadata.json.
+
 Usage:
   python score_new_data.py --data new_data.csv --output predictions.csv
-  python score_new_data.py --data new_data.csv --ext-data external.csv --output predictions.csv
+  python score_new_data.py --data new_data.csv --output predictions.csv --threshold 0.4
 
 The script expects artefacts in ~/ml_artefacts (or override with --artefact-dir).
 """
@@ -22,8 +26,12 @@ import numpy as np
 import pandas as pd
 
 
-def score_new_data(raw_df, artefact_dir, ext_raw_df=None, merge_key=None):
-    """Score raw data using saved artefacts. Identical to deployment."""
+def score_new_data(raw_df, artefact_dir, ext_raw_df=None):
+    """Score raw data using saved artefacts. Identical to deployment.
+
+    raw_df    : DataFrame with main columns (from COLUMNS_LIST)
+    ext_raw_df: DataFrame with external columns (from EXT_COLUMNS), same index as raw_df
+    """
     model     = joblib.load(os.path.join(artefact_dir, "xgb_model.joblib"))
     ohe_enc   = joblib.load(os.path.join(artefact_dir, "ohe_encoder.joblib"))
     bin_edges = json.load(open(os.path.join(artefact_dir, "bin_edges.json")))
@@ -67,7 +75,7 @@ def score_new_data(raw_df, artefact_dir, ext_raw_df=None, merge_key=None):
         index=raw_df.index,
     )
 
-    # External features (if applicable)
+    # External features
     if col_meta.get("has_external") and ext_raw_df is not None:
         ext_raw_df = ext_raw_df.copy()
         ext_ohe_enc = joblib.load(
@@ -80,11 +88,8 @@ def score_new_data(raw_df, artefact_dir, ext_raw_df=None, merge_key=None):
             open(os.path.join(artefact_dir, "ext_rare_mappings.json"))
         )
 
-        if merge_key and merge_key in raw_df.columns:
-            ext_raw_df = raw_df[[merge_key]].merge(
-                ext_raw_df, on=merge_key, how="left"
-            )
-            ext_raw_df.index = raw_df.index
+        # Indices already aligned (same CSV, same rows)
+        ext_raw_df.index = raw_df.index
 
         for col, info in ext_bin_edges.items():
             if col in ext_raw_df.columns:
@@ -140,7 +145,8 @@ def main():
         description="Score new data using saved classification pipeline artefacts."
     )
     parser.add_argument(
-        "--data", required=True, help="Path to the input CSV file with raw features."
+        "--data", required=True,
+        help="Path to the input CSV file (single file with all columns — main + external).",
     )
     parser.add_argument(
         "--output",
@@ -151,11 +157,6 @@ def main():
         "--artefact-dir",
         default=str(Path.home() / "ml_artefacts"),
         help="Path to the artefact directory (default: ~/ml_artefacts).",
-    )
-    parser.add_argument(
-        "--ext-data",
-        default=None,
-        help="Path to external data CSV (optional).",
     )
     parser.add_argument(
         "--threshold",
@@ -173,31 +174,37 @@ def main():
         print(f"Error: Artefact directory not found: {args.artefact_dir}")
         sys.exit(1)
 
-    # Load column metadata for merge key
+    # Load column metadata
     col_meta_path = os.path.join(args.artefact_dir, "column_metadata.json")
     with open(col_meta_path) as f:
         col_meta = json.load(f)
-    merge_key = col_meta.get("ext_merge_key")
 
-    # Load data
+    # Load data (single CSV with all columns)
     print(f"Loading data from: {args.data}")
-    raw_df = pd.read_csv(args.data)
-    print(f"  Shape: {raw_df.shape}")
+    full_df = pd.read_csv(args.data)
+    print(f"  Shape: {full_df.shape}")
 
-    # Load external data if provided
+    # Split into main and external columns automatically
+    # Main columns = whatever's not in ext_columns and not the target
+    ext_columns = col_meta.get("ext_columns", [])
+    target_col = col_meta.get("target_col", "target")
+
+    # Remove target if present (we don't need it for scoring)
+    main_df = full_df.drop(columns=[target_col], errors="ignore")
+
     ext_raw_df = None
-    if args.ext_data is not None:
-        if not os.path.isfile(args.ext_data):
-            print(f"Error: External data file not found: {args.ext_data}")
-            sys.exit(1)
-        print(f"Loading external data from: {args.ext_data}")
-        ext_raw_df = pd.read_csv(args.ext_data)
-        print(f"  Shape: {ext_raw_df.shape}")
+    if col_meta.get("has_external") and ext_columns:
+        available_ext = [c for c in ext_columns if c in full_df.columns]
+        if available_ext:
+            ext_raw_df = full_df[available_ext].copy()
+            print(f"  External columns found: {len(available_ext)}/{len(ext_columns)}")
+        else:
+            print(f"  WARNING: No external columns found in data.")
 
     # Score
     print("Scoring ...")
     probabilities, predictions = score_new_data(
-        raw_df, args.artefact_dir, ext_raw_df=ext_raw_df, merge_key=merge_key
+        main_df, args.artefact_dir, ext_raw_df=ext_raw_df
     )
 
     # Apply custom threshold if not default
@@ -206,7 +213,7 @@ def main():
         print(f"  Using custom threshold: {args.threshold}")
 
     # Build output
-    output_df = raw_df.copy()
+    output_df = full_df.copy()
     output_df["prediction_probability"] = probabilities
     output_df["prediction"] = predictions
 

@@ -3,15 +3,20 @@ Classification Training Pipeline
 =================================
 Standalone script that replicates the notebook pipeline end-to-end.
 
+All data (main + external columns) lives in a single CSV file.
+- Main columns go through the main pipeline (sections 2-7)
+- External columns go through the external pipeline (section 8)
+- Both are concatenated before train/test split
+
 Steps:
   1. Load data & holdout split (15% true out-of-sample)
-  2. Column selection (drop / keep)
+  2. Column selection (keep COLUMNS_LIST)
   3. Null analysis & column removal
   4. Class-wise variation analysis & low-variation column removal
   5. Identify categorical vs numerical columns
   6. Numerical binning
   7. One-hot encoding
-  8. External data pipeline (optional)
+  8. External columns pipeline (from same CSV)
   9. Save transformation artefacts
   10. Stratified train / test split
   11. XGBoost GridSearchCV
@@ -49,8 +54,8 @@ from xgboost import XGBClassifier
 # ║                    USER CONFIGURATION                           ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
-# ── Data ───────────────────────────────────────────────────────────
-DATA_PATH  = "connected_dataset_dpd0_20260207_141810.csv"
+# ── Data (single combined CSV) ────────────────────────────────────
+DATA_PATH  = "final_enriched_output.csv"
 TARGET_COL = "target"
 TARGET_RENAME = {"target_dpd0": "target"}  # rename applied after load
 
@@ -58,27 +63,68 @@ TARGET_RENAME = {"target_dpd0": "target"}  # rename applied after load
 HOLDOUT_PCT  = 0.15
 HOLDOUT_SEED = 99
 
-# ── Column selection ───────────────────────────────────────────────
+# ── Main column selection ─────────────────────────────────────────
 MODE = "keep"  # "drop" or "keep"
 COLUMNS_LIST = [
-    "target", "l_principal", "l_partner_disburcement_amount", "l_discount",
-    "l_term", "cl_cupo", "cl_cupo_disponible", "cedula", "platam_score",
-    "hybrid_score", "platam_rating", "hybrid_rating", "categoria_madurez",
-    "edad", "ingresos_smlv", "nivel_ingresos_encoded", "cuota_mensual",
-    "ratio_cuota_ingreso", "creditos_vigentes", "creditos_mora",
-    "hist_neg_12m", "departamento", "experian_score", "total_debt",
-    "queries_6m", "queries_12m", "active_credits", "closed_credits",
-    "total_entities", "negative_entities", "genero", "edad_promedio",
-    "num_accounts", "total_account_balance", "total_arrears_balance",
-    "num_accounts_in_arrears", "clr_type", "clr_doc_type",
-    "clr_bus_relation", "clr_city", "clr_bus_type",
-    "clr_bus_num_locations", "clr_bus_num_employees", "clr_bus_seniority",
-    "clr_bus_monthly_purchases", "clr_bus_current_purchases",
-    "clr_bus_monthly_income", "clr_bus_monthly_expenses",
-    "clr_declares_rent", "clr_has_rent", "clr_rent", "clr_hcpn_status",
-    "clr_credit_study_score", "clr_credit_study_result",
-    "clr_credit_study_loc", "clr_requested_loc", "clr_risk_profile",
-    "clr_sr_opinion_relationship_duration", "clr_agent_recommendation",
+    "target",
+    "l_principal",
+    "l_partner_disburcement_amount",
+    "l_discount",
+    "l_term",
+    "cl_cupo",
+    "cl_cupo_disponible",
+    "cedula",
+    "platam_score",
+    "hybrid_score",
+    "platam_rating",
+    "hybrid_rating",
+    "categoria_madurez",
+    "edad",
+    "ingresos_smlv",
+    "nivel_ingresos_encoded",
+    "cuota_mensual",
+    "ratio_cuota_ingreso",
+    "creditos_vigentes",
+    "creditos_mora",
+    "hist_neg_12m",
+    "departamento",
+    "experian_score",
+    "total_debt",
+    "queries_6m",
+    "queries_12m",
+    "active_credits",
+    "closed_credits",
+    "total_entities",
+    "negative_entities",
+    "genero",
+    "edad_promedio",
+    "num_accounts",
+    "total_account_balance",
+    "total_arrears_balance",
+    "num_accounts_in_arrears",
+    "clr_type",
+    "clr_doc_type",
+    "clr_bus_relation",
+    "clr_city",
+    "clr_bus_type",
+    "clr_bus_num_locations",
+    "clr_bus_num_employees",
+    "clr_bus_seniority",
+    "clr_bus_monthly_purchases",
+    "clr_bus_current_purchases",
+    "clr_bus_monthly_income",
+    "clr_bus_monthly_expenses",
+    "clr_declares_rent",
+    "clr_has_rent",
+    "clr_rent",
+    "clr_hcpn_status",
+    "clr_credit_study_score",
+    "clr_credit_study_result",
+    "clr_credit_study_loc",
+    "clr_requested_loc",
+    "clr_risk_profile",
+    "clr_sr_opinion_relationship_duration",
+    "clr_agent_recommendation",
     "clr_agent_loc",
 ]
 
@@ -102,11 +148,77 @@ CUSTOM_BINS      = {}
 DROP_FIRST     = False
 MAX_CATEGORIES = None
 
-# ── External data ──────────────────────────────────────────────────
-EXTERNAL_DATA_PATH    = "final_enriched_output.csv"  # or None
-EXT_MERGE_KEY         = "loan_id"
-EXT_MODE              = "drop"
-EXT_COLUMNS_LIST      = []
+# ── External columns (from the same CSV) ──────────────────────────
+# Set to None or [] to skip external pipeline entirely
+EXT_COLUMNS = [
+    "rating",
+    "user_ratings_total",
+    "photo_count",
+    "industry",
+    "industry_confidence",
+    "gross_revenue_midpoint",
+    "gross_revenue_low",
+    "gross_revenue_high",
+    "net_profit_midpoint",
+    "owner_income_midpoint",
+    "financial_strength_score",
+    "strengths_count",
+    "weaknesses_count",
+    "opportunities_count",
+    "threats_count",
+    "total_swot_factors",
+    "digital_health_score",
+    "trust_score",
+    "online_presence_score",
+    "business_health_score",
+    "monnai_final_score",
+    "monnai_score_group",
+    "fraud_risk_score",
+    "google_reviews_count",
+    "social_googlemaps_place_general_rating",
+    "social_googlemaps_overall_place_riviews",
+    "social_googlemaps_local_guide_reviewer_count",
+    "social_googlemaps_category",
+    "social_googlemaps_positive_reviews_share",
+    "social_googlemaps_negative_reviews_share",
+    "social_googlemaps_neutral_reviews_share",
+    "social_facebook_num_comments_Total",
+    "social_facebook_num_shares_Total",
+    "social_facebook_page_category",
+    "social_facebook_page_followers",
+    "social_facebook_page_is_verified",
+    "social_facebook_video_view_count_Total",
+    "social_facebook_likes_post_Total",
+    "social_facebook_positive_post_share",
+    "social_facebook_negative_posts_share",
+    "social_facebook_neutral_post_share",
+    "social_instagram_posts_count",
+    "social_instagram_is_business_account",
+    "social_instagram_is_professional_account",
+    "social_instagram_is_verified",
+    "social_instagram_avg_engagement",
+    "social_instagram_category_name",
+    "social_instagram_following",
+    "social_instagram_highlights_count",
+    "social_instagram_full_name",
+    "social_instagram_is_private",
+    "social_instagram_is_joined_recently",
+    "social_instagram_has_channel",
+    "social_instagram_post_likes_total_count",
+    "social_instagram_post_likes_average_count",
+    "social_instagram_post_total_comments",
+    "social_instagram_post_average_comments",
+    "social_instagram_content_type_Image",
+    "social_instagram_content_type_Video",
+    "social_instagram_content_type_Reel",
+    "social_instagram_content_type_Carousel",
+    "social_instagram_video_view_count_total",
+    "social_instagram_video_view_count_average",
+    "social_instagram_positive_post_share",
+    "social_instagram_negative_posts_share",
+    "social_instagram_neutral_post_share",
+]
+
 EXT_NULL_THRESHOLD_PCT    = NULL_THRESHOLD_PCT
 EXT_VARIATION_THRESHOLD   = VARIATION_THRESHOLD
 EXT_DROP_LOW_VARIATION    = []
@@ -226,8 +338,12 @@ def ohe_columns(dataframe, target_col, drop_first, max_categories, rare_map_stor
     return result, encode_cols, ohe, rare_map_store
 
 
-def score_new_data(raw_df, artefact_dir, ext_raw_df=None, merge_key=None):
-    """Score raw data using saved artefacts. Identical to deployment."""
+def score_new_data(raw_df, artefact_dir, ext_raw_df=None):
+    """Score raw data using saved artefacts. Identical to deployment.
+
+    raw_df    : DataFrame with main columns (from COLUMNS_LIST)
+    ext_raw_df: DataFrame with external columns (from EXT_COLUMNS), same index as raw_df
+    """
     model     = joblib.load(os.path.join(artefact_dir, "xgb_model.joblib"))
     ohe_enc   = joblib.load(os.path.join(artefact_dir, "ohe_encoder.joblib"))
     bin_edges = json.load(open(os.path.join(artefact_dir, "bin_edges.json")))
@@ -236,15 +352,19 @@ def score_new_data(raw_df, artefact_dir, ext_raw_df=None, merge_key=None):
     features  = json.load(open(os.path.join(artefact_dir, "final_features.json")))
 
     raw_df = raw_df.copy()
+
+    # Bin numerical columns
     for col, info in bin_edges.items():
         if col in raw_df.columns:
             raw_df[col + "_bin"] = pd.cut(raw_df[col], bins=info["edges"], labels=False, include_lowest=True)
     raw_df.drop(columns=[c for c in col_meta["original_num_cols"] if c in raw_df.columns], inplace=True, errors="ignore")
 
+    # Handle rare categories
     for col, rares in rare_map.items():
         if col in raw_df.columns:
             raw_df[col] = raw_df[col].apply(lambda x: "__rare__" if x in rares else x)
 
+    # Fill nulls & OHE main features
     enc_cols = col_meta["encode_cols"]
     for col in enc_cols:
         if col in raw_df.columns and raw_df[col].isnull().any():
@@ -255,15 +375,15 @@ def score_new_data(raw_df, artefact_dir, ext_raw_df=None, merge_key=None):
     encoded = ohe_enc.transform(raw_df[enc_cols])
     enc_df = pd.DataFrame(encoded, columns=ohe_enc.get_feature_names_out(enc_cols), index=raw_df.index)
 
+    # External features
     if col_meta.get("has_external") and ext_raw_df is not None:
         ext_raw_df = ext_raw_df.copy()
         ext_ohe_enc   = joblib.load(os.path.join(artefact_dir, "ext_ohe_encoder.joblib"))
         ext_bin_edges = json.load(open(os.path.join(artefact_dir, "ext_bin_edges.json")))
         ext_rare_map  = json.load(open(os.path.join(artefact_dir, "ext_rare_mappings.json")))
 
-        if merge_key and merge_key in raw_df.columns:
-            ext_raw_df = raw_df[[merge_key]].merge(ext_raw_df, on=merge_key, how="left")
-            ext_raw_df.index = raw_df.index
+        # Indices already aligned (same CSV, same rows)
+        ext_raw_df.index = raw_df.index
 
         for col, info in ext_bin_edges.items():
             if col in ext_raw_df.columns:
@@ -285,6 +405,7 @@ def score_new_data(raw_df, artefact_dir, ext_raw_df=None, merge_key=None):
         ext_enc_df = pd.DataFrame(ext_encoded, columns=ext_ohe_enc.get_feature_names_out(ext_enc_cols), index=raw_df.index)
         enc_df = pd.concat([enc_df, ext_enc_df], axis=1)
 
+    # Align to training features and predict
     for col in features:
         if col not in enc_df.columns:
             enc_df[col] = 0
@@ -302,22 +423,26 @@ def main():
 
     # ── 1. Load data ───────────────────────────────────────────────
     print("\n[1] Loading data ...")
-    df = pd.read_csv(DATA_PATH)
-    df.rename(columns=TARGET_RENAME, inplace=True)
-    print(f"  Shape: {df.shape}")
-    print(f"  Target distribution:\n{df[TARGET_COL].value_counts(normalize=True)}")
+    df_full = pd.read_csv(DATA_PATH)
+    df_full.rename(columns=TARGET_RENAME, inplace=True)
+    print(f"  Shape: {df_full.shape}")
+    print(f"  Target distribution:\n{df_full[TARGET_COL].value_counts(normalize=True)}")
 
     # ── 1a. Holdout split ──────────────────────────────────────────
     print(f"\n[1a] Holdout split ({HOLDOUT_PCT*100:.0f}%) ...")
     df_dev, df_holdout = train_test_split(
-        df, test_size=HOLDOUT_PCT, random_state=HOLDOUT_SEED, stratify=df[TARGET_COL]
+        df_full, test_size=HOLDOUT_PCT, random_state=HOLDOUT_SEED, stratify=df_full[TARGET_COL]
     )
     holdout_raw = df_holdout.copy()
-    df = df_dev.reset_index(drop=True)
-    print(f"  Dev: {len(df)} rows | Holdout: {len(holdout_raw)} rows")
+    df_dev = df_dev.reset_index(drop=True)
+    print(f"  Dev: {len(df_dev)} rows | Holdout: {len(holdout_raw)} rows")
 
-    # ── 2. Column selection ────────────────────────────────────────
-    print("\n[2] Column selection ...")
+    # Save full dev data before column selection (needed for external columns)
+    df_dev_full = df_dev.copy()
+
+    # ── 2. Column selection (main columns) ─────────────────────────
+    print("\n[2] Column selection (main columns) ...")
+    df = df_dev.copy()
     if MODE == "drop":
         df.drop(columns=[c for c in COLUMNS_LIST if c in df.columns], inplace=True)
     elif MODE == "keep":
@@ -358,7 +483,7 @@ def main():
     main_feature_cols = [c for c in df.columns if c != TARGET_COL]
     print(f"  Shape after OHE: {df.shape}")
 
-    # ── 8. External data ───────────────────────────────────────────
+    # ── 8. External columns pipeline ───────────────────────────────
     ext_bin_edges_store = {}
     ext_rare_mappings = {}
     ext_ohe = None
@@ -366,52 +491,37 @@ def main():
     ext_cat_cols = []
     ext_num_cols = []
     ext_df = None
-    holdout_ext_raw = None
 
-    if EXTERNAL_DATA_PATH is not None and EXT_MERGE_KEY is not None:
-        print("\n[8] External data pipeline ...")
-        ext_raw = pd.read_csv(EXTERNAL_DATA_PATH)
-        main_raw_full = pd.read_csv(DATA_PATH)
-        main_raw_full.rename(columns=TARGET_RENAME, inplace=True)
+    if EXT_COLUMNS and len(EXT_COLUMNS) > 0:
+        print("\n[8] External columns pipeline ...")
 
-        main_dev_raw, main_holdout_raw = train_test_split(
-            main_raw_full, test_size=HOLDOUT_PCT, random_state=HOLDOUT_SEED,
-            stratify=main_raw_full[TARGET_COL]
-        )
-        main_dev_raw = main_dev_raw.reset_index(drop=True)
+        # Extract external columns from the same dev data
+        available_ext = [c for c in EXT_COLUMNS if c in df_dev_full.columns]
+        missing_ext = [c for c in EXT_COLUMNS if c not in df_dev_full.columns]
+        if missing_ext:
+            print(f"  WARNING: {len(missing_ext)} external columns not found: {missing_ext}")
 
-        # Dev external
-        ext_merged = main_dev_raw[[EXT_MERGE_KEY, TARGET_COL]].merge(ext_raw, on=EXT_MERGE_KEY, how="left")
-        ext_merged.index = df.index
-        ext_feature_names = [c for c in ext_merged.columns if c not in [EXT_MERGE_KEY, TARGET_COL]]
-        ext_df = ext_merged[ext_feature_names + [TARGET_COL]].copy()
-
-        # Holdout external
-        holdout_ext_merged = main_holdout_raw[[EXT_MERGE_KEY, TARGET_COL]].merge(ext_raw, on=EXT_MERGE_KEY, how="left")
-        holdout_ext_raw = holdout_ext_merged.drop(columns=[TARGET_COL]).reset_index(drop=True)
-
-        # Drop/keep
-        if EXT_MODE == "drop":
-            ext_df.drop(columns=[c for c in EXT_COLUMNS_LIST if c in ext_df.columns], inplace=True)
-        elif EXT_MODE == "keep":
-            keep = list(set(EXT_COLUMNS_LIST + [TARGET_COL]))
-            ext_df = ext_df[[c for c in keep if c in ext_df.columns]]
+        ext_df = df_dev_full[available_ext + [TARGET_COL]].copy()
+        ext_df.index = df.index  # align with main df
+        print(f"  External columns selected: {len(available_ext)}")
 
         # Null analysis
         ext_feature_cols = [c for c in ext_df.columns if c != TARGET_COL]
         ext_null_drops = null_analysis(ext_df, ext_feature_cols, EXT_NULL_THRESHOLD_PCT, TARGET_COL)
         ext_df.drop(columns=ext_null_drops, inplace=True)
-        print(f"  Ext null drops: {len(ext_null_drops)}")
+        print(f"  Ext null drops: {len(ext_null_drops)} columns: {ext_null_drops}")
 
         # Variation
         ext_feature_cols = [c for c in ext_df.columns if c != TARGET_COL]
         ext_flagged, _ = variation_analysis(ext_df, ext_feature_cols, TARGET_COL, EXT_VARIATION_THRESHOLD)
+        print(f"  Ext flagged (low variation): {ext_flagged}")
         ext_df.drop(columns=[c for c in EXT_DROP_LOW_VARIATION if c in ext_df.columns], inplace=True)
 
         # Types, binning, OHE
         ext_feature_cols = [c for c in ext_df.columns if c != TARGET_COL]
         if len(ext_feature_cols) > 0:
             ext_cat_cols, ext_num_cols = identify_col_types(ext_df, ext_feature_cols)
+            print(f"  Ext categorical: {len(ext_cat_cols)} | Ext numerical: {len(ext_num_cols)}")
             if ext_num_cols:
                 ext_df, ext_bin_edges_store = bin_columns(
                     ext_df, ext_num_cols, EXT_N_BINS, EXT_BINNING_STRATEGY, EXT_CUSTOM_BINS, ext_bin_edges_store
@@ -419,14 +529,15 @@ def main():
             ext_df, ext_encode_cols, ext_ohe, ext_rare_mappings = ohe_columns(
                 ext_df, TARGET_COL, EXT_DROP_FIRST, EXT_MAX_CATEGORIES, ext_rare_mappings
             )
-            # Concatenate
+            # Concatenate with main
             ext_only = ext_df.drop(columns=[TARGET_COL])
             df = pd.concat([df.drop(columns=[TARGET_COL]), ext_only, df[[TARGET_COL]]], axis=1)
             print(f"  Combined shape: {df.shape}")
         else:
             ext_df = None
+            print("  No external columns survived preprocessing.")
     else:
-        print("\n[8] No external data — skipping.")
+        print("\n[8] No external columns — skipping.")
 
     # ── 9. Save artefacts ──────────────────────────────────────────
     print("\n[9] Saving transformation artefacts ...")
@@ -448,9 +559,9 @@ def main():
         "encode_cols": encode_cols, "main_feature_cols": main_feature_cols,
         "ext_cat_cols": ext_cat_cols, "ext_num_cols": ext_num_cols,
         "ext_encode_cols": ext_encode_cols,
+        "ext_columns": EXT_COLUMNS if EXT_COLUMNS else [],
         "final_feature_cols": [c for c in df.columns if c != TARGET_COL],
         "target_col": TARGET_COL, "has_external": ext_df is not None,
-        "ext_merge_key": EXT_MERGE_KEY if ext_df is not None else None,
     }
     with open(os.path.join(ARTEFACT_DIR, "column_metadata.json"), "w") as f:
         json.dump(col_meta, f, indent=2)
@@ -538,6 +649,8 @@ def main():
 
     # ── 15. Holdout evaluation ─────────────────────────────────────
     print("\n[15] Holdout (out-of-sample) evaluation ...")
+
+    # Main columns from holdout
     holdout_df = holdout_raw.copy()
     if MODE == "keep":
         keep_cols = list(set(COLUMNS_LIST + [TARGET_COL]))
@@ -546,12 +659,15 @@ def main():
         holdout_df.drop(columns=[c for c in COLUMNS_LIST if c in holdout_df.columns], inplace=True)
 
     y_holdout = holdout_df[TARGET_COL]
-    holdout_features = holdout_df.drop(columns=[TARGET_COL])
+    holdout_main = holdout_df.drop(columns=[TARGET_COL])
 
-    h_ext = holdout_ext_raw if EXTERNAL_DATA_PATH is not None else None
-    h_merge = EXT_MERGE_KEY if EXTERNAL_DATA_PATH is not None else None
+    # External columns from holdout (same CSV, so they're already there)
+    holdout_ext = None
+    if EXT_COLUMNS and ext_df is not None:
+        available_ext_h = [c for c in EXT_COLUMNS if c in holdout_raw.columns]
+        holdout_ext = holdout_raw[available_ext_h].reset_index(drop=True)
 
-    h_prob = score_new_data(holdout_features, ARTEFACT_DIR, ext_raw_df=h_ext, merge_key=h_merge)
+    h_prob = score_new_data(holdout_main, ARTEFACT_DIR, ext_raw_df=holdout_ext)
     h_pred = (h_prob >= 0.5).astype(int)
 
     holdout_metrics = {
