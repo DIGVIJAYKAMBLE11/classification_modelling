@@ -493,18 +493,22 @@ def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scorin
     }
 
 
-def score_new_data(raw_df, artefact_dir, ext_raw_df=None):
+def score_new_data(raw_df, artefact_dir, ext_raw_df=None,
+                   model_file="xgb_model.joblib",
+                   features_file="final_features.json"):
     """Score raw data using saved artefacts. Identical to deployment.
 
-    raw_df    : DataFrame with main columns (from COLUMNS_LIST)
-    ext_raw_df: DataFrame with external columns (from EXT_COLUMNS), same index as raw_df
+    raw_df        : DataFrame with main columns (from COLUMNS_LIST)
+    ext_raw_df    : DataFrame with external columns (from EXT_COLUMNS), same index as raw_df
+    model_file    : model joblib filename (default: augmented model)
+    features_file : features json filename (default: augmented features)
     """
-    model     = joblib.load(os.path.join(artefact_dir, "xgb_model.joblib"))
+    model     = joblib.load(os.path.join(artefact_dir, model_file))
     ohe_enc   = joblib.load(os.path.join(artefact_dir, "ohe_encoder.joblib"))
     bin_edges = json.load(open(os.path.join(artefact_dir, "bin_edges.json")))
     col_meta  = json.load(open(os.path.join(artefact_dir, "column_metadata.json")))
     rare_map  = json.load(open(os.path.join(artefact_dir, "rare_mappings.json")))
-    features  = json.load(open(os.path.join(artefact_dir, "final_features.json")))
+    features  = json.load(open(os.path.join(artefact_dir, features_file)))
 
     raw_df = raw_df.copy()
 
@@ -841,32 +845,54 @@ def main():
         available_ext_h = [c for c in EXT_COLUMNS if c in holdout_raw.columns]
         holdout_ext = holdout_raw[available_ext_h].reset_index(drop=True)
 
-    h_prob = score_new_data(holdout_main, ARTEFACT_DIR, ext_raw_df=holdout_ext)
-    h_pred = (h_prob >= 0.5).astype(int)
+    # --- Holdout scored with MAIN-ONLY model ---
+    h_prob_main = score_new_data(
+        holdout_main, ARTEFACT_DIR, ext_raw_df=None,
+        model_file="xgb_model_main_only.joblib",
+        features_file="final_features_main_only.json",
+    )
+    h_pred_main = (h_prob_main >= 0.5).astype(int)
 
-    holdout_metrics = {
-        "Accuracy":          accuracy_score(y_holdout, h_pred),
-        "Balanced Accuracy": balanced_accuracy_score(y_holdout, h_pred),
-        "F1 Score":          f1_score(y_holdout, h_pred),
-        "AUC (ROC)":         roc_auc_score(y_holdout, h_prob),
-        "Gini":              2 * roc_auc_score(y_holdout, h_prob) - 1,
+    holdout_main_metrics = {
+        "Accuracy":          accuracy_score(y_holdout, h_pred_main),
+        "Balanced Accuracy": balanced_accuracy_score(y_holdout, h_pred_main),
+        "F1 Score":          f1_score(y_holdout, h_pred_main),
+        "AUC (ROC)":         roc_auc_score(y_holdout, h_prob_main),
+        "Gini":              2 * roc_auc_score(y_holdout, h_prob_main) - 1,
+    }
+
+    # --- Holdout scored with AUGMENTED model ---
+    h_prob_aug = score_new_data(holdout_main, ARTEFACT_DIR, ext_raw_df=holdout_ext)
+    h_pred_aug = (h_prob_aug >= 0.5).astype(int)
+
+    holdout_aug_metrics = {
+        "Accuracy":          accuracy_score(y_holdout, h_pred_aug),
+        "Balanced Accuracy": balanced_accuracy_score(y_holdout, h_pred_aug),
+        "F1 Score":          f1_score(y_holdout, h_pred_aug),
+        "AUC (ROC)":         roc_auc_score(y_holdout, h_prob_aug),
+        "Gini":              2 * roc_auc_score(y_holdout, h_prob_aug) - 1,
     }
 
     # ── Comparison table ────────────────────────────────────────────
-    print("\n  " + "=" * 75)
-    print("  MAIN ONLY vs AUGMENTED vs HOLDOUT")
-    print("  " + "=" * 75)
+    print("\n  " + "=" * 100)
+    print("  DEV-TEST (Main vs Aug)  &  HOLDOUT (Main vs Aug)")
+    print("  " + "=" * 100)
     main_metrics = main_result["metrics"]
     aug_metrics = metrics  # augmented if available, else same as main
+    print(f"  {'Metric':<20s}  {'Dev_Main':>10s}  {'Dev_Aug':>10s}  {'Hold_Main':>10s}  {'Hold_Aug':>10s}")
+    print("  " + "-" * 100)
     for name in main_metrics:
-        main_val = main_metrics[name]
-        aug_val  = aug_metrics[name]
-        hold_val = holdout_metrics[name]
-        print(f"  {name:<20s}  Main={main_val:.4f}  Aug={aug_val:.4f}  Holdout={hold_val:.4f}")
-    print("  " + "=" * 75)
+        main_val     = main_metrics[name]
+        aug_val      = aug_metrics[name]
+        hold_main_v  = holdout_main_metrics[name]
+        hold_aug_v   = holdout_aug_metrics[name]
+        print(f"  {name:<20s}  {main_val:>10.4f}  {aug_val:>10.4f}  {hold_main_v:>10.4f}  {hold_aug_v:>10.4f}")
+    print("  " + "=" * 100)
 
+    with open(os.path.join(ARTEFACT_DIR, "holdout_metrics_main_only.json"), "w") as f:
+        json.dump(holdout_main_metrics, f, indent=2)
     with open(os.path.join(ARTEFACT_DIR, "holdout_metrics.json"), "w") as f:
-        json.dump(holdout_metrics, f, indent=2)
+        json.dump(holdout_aug_metrics, f, indent=2)
 
     print(f"\nAll artefacts saved to: {ARTEFACT_DIR}")
     print("Done.")
