@@ -894,6 +894,52 @@ def main():
     with open(os.path.join(ARTEFACT_DIR, "holdout_metrics.json"), "w") as f:
         json.dump(holdout_aug_metrics, f, indent=2)
 
+    # ── Predictor comparison ───────────────────────────────────────
+    main_feats = set(main_result["X_train"].columns.tolist())
+    aug_feats  = set(aug_result["X_train"].columns.tolist()) if ext_df is not None else main_feats
+
+    common   = sorted(main_feats & aug_feats)
+    only_main = sorted(main_feats - aug_feats)
+    only_aug  = sorted(aug_feats - main_feats)
+
+    print("\n  " + "=" * 100)
+    print("  PREDICTORS USED IN EACH MODEL")
+    print("  " + "=" * 100)
+
+    print(f"\n  MAIN-ONLY model : {len(main_feats)} predictors")
+    print(f"  AUGMENTED model : {len(aug_feats)} predictors")
+    print(f"  Common          : {len(common)}")
+    print(f"  Only in MAIN    : {len(only_main)}")
+    print(f"  Only in AUG     : {len(only_aug)}")
+
+    if common:
+        print(f"\n  -- Common predictors ({len(common)}) --")
+        for i, f_name in enumerate(common, 1):
+            print(f"     {i:>3d}. {f_name}")
+
+    if only_main:
+        print(f"\n  -- Only in MAIN-ONLY ({len(only_main)}) --")
+        for i, f_name in enumerate(only_main, 1):
+            print(f"     {i:>3d}. {f_name}")
+
+    if only_aug:
+        print(f"\n  -- Only in AUGMENTED ({len(only_aug)}) --")
+        for i, f_name in enumerate(only_aug, 1):
+            print(f"     {i:>3d}. {f_name}")
+
+    print("  " + "=" * 100)
+
+    # Save predictor comparison
+    predictor_comparison = {
+        "main_only_predictors": sorted(main_feats),
+        "augmented_predictors": sorted(aug_feats),
+        "common": common,
+        "only_in_main": only_main,
+        "only_in_augmented": only_aug,
+    }
+    with open(os.path.join(ARTEFACT_DIR, "predictor_comparison.json"), "w") as fpc:
+        json.dump(predictor_comparison, fpc, indent=2)
+
     print(f"\nAll artefacts saved to: {ARTEFACT_DIR}")
     print("Done.")
 
