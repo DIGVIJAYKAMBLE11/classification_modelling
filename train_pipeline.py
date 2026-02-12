@@ -294,7 +294,7 @@ def variation_analysis(dataframe, columns, target_col, threshold):
 
 
 def identify_col_types(dataframe, feature_cols):
-    cat = [c for c in feature_cols if dataframe[c].dtype in ["object", "category"] or dataframe[c].nunique() <= 10]
+    cat = [c for c in feature_cols if not pd.api.types.is_numeric_dtype(dataframe[c]) or dataframe[c].nunique() <= 10]
     num = [c for c in feature_cols if c not in cat]
     return cat, num
 
@@ -313,6 +313,16 @@ def bin_columns(dataframe, num_cols, n_bins, strategy, custom_bins, bin_store,
 
     for col in num_cols:
         series = dataframe[col].dropna()
+
+        # Pre-check: non-numeric columns cannot be binned
+        if not pd.api.types.is_numeric_dtype(dataframe[col]):
+            if fallback == "categorical":
+                moved_to_cat.append(col)
+                print(f"  WARNING: {col} is not numeric (dtype={dataframe[col].dtype}) — moved to categorical")
+            else:
+                dropped.append(col)
+                print(f"  WARNING: {col} is not numeric (dtype={dataframe[col].dtype}) — dropped")
+            continue
 
         # Pre-check: constant or single-value columns cannot be binned
         if series.nunique() < 2:
