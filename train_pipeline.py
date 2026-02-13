@@ -802,9 +802,15 @@ def main():
             json.dump(aug_result["X_train"].columns.tolist(), f, indent=2)
         with open(os.path.join(ARTEFACT_DIR, "test_metrics_augmented.json"), "w") as f:
             json.dump(aug_result["metrics"], f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "test_metrics.json"), "w") as f:
+            json.dump(aug_result["metrics"], f, indent=2)
         with open(os.path.join(ARTEFACT_DIR, "best_params_augmented.json"), "w") as f:
             json.dump(aug_result["best_params"], f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "best_params.json"), "w") as f:
+            json.dump(aug_result["best_params"], f, indent=2)
         with open(os.path.join(ARTEFACT_DIR, "dropped_features_augmented.json"), "w") as f:
+            json.dump(aug_result["feature_drop_info"], f, indent=2)
+        with open(os.path.join(ARTEFACT_DIR, "dropped_features.json"), "w") as f:
             json.dump(aug_result["feature_drop_info"], f, indent=2)
 
         # Use augmented model for holdout & final artefacts
@@ -898,6 +904,98 @@ def main():
     with open(os.path.join(ARTEFACT_DIR, "holdout_metrics.json"), "w") as f:
         json.dump(holdout_aug_metrics, f, indent=2)
 
+    # ── KS Statistic ──────────────────────────────────────────────
+    print("\n[KS] Computing KS statistic ...")
+
+    def compute_ks(y_true, y_prob):
+        """KS statistic: max separation between positive and negative CDFs."""
+        pos = y_prob[y_true == 1]
+        neg = y_prob[y_true == 0]
+        if len(pos) == 0 or len(neg) == 0:
+            return 0.0
+        return ks_2samp(pos, neg)[0]
+
+    ks_results = {}
+
+    # Dev test KS — main-only
+    main_y_pred_prob = main_result["best_model"].predict_proba(
+        main_result["X_test"])[:, 1]
+    ks_dev_main = compute_ks(main_result["y_test"].values, main_y_pred_prob)
+    ks_results["Dev_Main_KS"] = round(ks_dev_main, 6)
+    print(f"  Dev Main-Only  KS = {ks_dev_main:.4f}")
+
+    # Dev test KS — augmented
+    if ext_df is not None:
+        aug_y_pred_prob = aug_result["best_model"].predict_proba(
+            aug_result["X_test"])[:, 1]
+        ks_dev_aug = compute_ks(aug_result["y_test"].values, aug_y_pred_prob)
+        ks_results["Dev_Aug_KS"] = round(ks_dev_aug, 6)
+        print(f"  Dev Augmented  KS = {ks_dev_aug:.4f}")
+    else:
+        ks_results["Dev_Aug_KS"] = ks_results["Dev_Main_KS"]
+        print(f"  Dev Augmented  KS = {ks_results['Dev_Main_KS']:.4f} (same as main)")
+
+    # Holdout KS
+    ks_hold_main = compute_ks(y_holdout.values, h_prob_main)
+    ks_results["Hold_Main_KS"] = round(ks_hold_main, 6)
+    print(f"  Holdout Main   KS = {ks_hold_main:.4f}")
+
+    ks_hold_aug = compute_ks(y_holdout.values, h_prob_aug)
+    ks_results["Hold_Aug_KS"] = round(ks_hold_aug, 6)
+    print(f"  Holdout Aug    KS = {ks_hold_aug:.4f}")
+
+    with open(os.path.join(ARTEFACT_DIR, "ks_statistics.json"), "w") as f:
+        json.dump(ks_results, f, indent=2)
+
+    # Add KS to the comparison table
+    print(f"\n  {'KS Statistic':<20s}  {ks_results['Dev_Main_KS']:>10.4f}  "
+          f"{ks_results['Dev_Aug_KS']:>10.4f}  "
+          f"{ks_results['Hold_Main_KS']:>10.4f}  "
+          f"{ks_results['Hold_Aug_KS']:>10.4f}")
+
+    # ── Save comprehensive metrics summary ─────────────────────────
+    print("\n[Summary] Saving comprehensive metrics & column tracking ...")
+
+    all_metrics_summary = {
+        "dev_main": main_result["metrics"],
+        "holdout_main": holdout_main_metrics,
+        "ks_dev_main": ks_results["Dev_Main_KS"],
+        "ks_holdout_main": ks_results["Hold_Main_KS"],
+    }
+    if ext_df is not None:
+        all_metrics_summary["dev_augmented"] = aug_result["metrics"]
+        all_metrics_summary["holdout_augmented"] = holdout_aug_metrics
+        all_metrics_summary["ks_dev_augmented"] = ks_results["Dev_Aug_KS"]
+        all_metrics_summary["ks_holdout_augmented"] = ks_results["Hold_Aug_KS"]
+
+    with open(os.path.join(ARTEFACT_DIR, "all_metrics_summary.json"), "w") as f:
+        json.dump(all_metrics_summary, f, indent=2)
+
+    # ── Save column tracking ───────────────────────────────────────
+    column_tracking = {
+        "initial_columns": COLUMNS_LIST,
+        "dropped_by_null_analysis": null_drops,
+        "flagged_low_variation": flagged,
+        "dropped_by_variation": DROP_LOW_VARIATION,
+        "categorical_columns": cat_cols,
+        "numerical_columns_binned": list(bin_edges_store.keys()),
+        "binning_moved_to_categorical": binning_moved_to_cat,
+        "binning_dropped": binning_dropped,
+        "columns_after_ohe": main_feature_cols,
+        "main_model_features_used": main_result["X_train"].columns.tolist(),
+        "main_model_features_dropped": main_result["feature_drop_info"]["final_dropped"],
+    }
+    if ext_df is not None:
+        column_tracking["external_columns_input"] = EXT_COLUMNS
+        column_tracking["external_dropped_by_null"] = [c for c in EXT_COLUMNS
+            if c not in [col for col in ext_df.columns if col != TARGET_COL]]
+        column_tracking["external_columns_binned"] = list(ext_bin_edges_store.keys())
+        column_tracking["augmented_model_features_used"] = aug_result["X_train"].columns.tolist()
+        column_tracking["augmented_model_features_dropped"] = aug_result["feature_drop_info"]["final_dropped"]
+
+    with open(os.path.join(ARTEFACT_DIR, "column_tracking.json"), "w") as f:
+        json.dump(column_tracking, f, indent=2)
+
     # ── Predictor report (CSV for sharing) ────────────────────────
     def _build_report(result, label, encode_columns):
         """Build a per-OHE-feature report with importance, status & drop reason."""
@@ -911,6 +1009,10 @@ def main():
         added_back   = set(drop_info["added_back"])
         extra_manual = set(drop_info["extra_manual_drops"])
         final_dropped = set(drop_info["final_dropped"])
+
+        # Sort encode columns by length descending so longer prefixes match first
+        # e.g., 'social_facebook_page' matches before 'social_facebook'
+        sorted_encode_cols = sorted(encode_columns, key=len, reverse=True)
 
         all_feats = sorted(set(gain.index.tolist()) | set(perm.index.tolist()))
         rows = []
@@ -930,9 +1032,9 @@ def main():
                 else:
                     reason = "Auto-flagged suspicious"
 
-            # Map back to original column name
+            # Map back to original column name (longest prefix match)
             base_col = feat
-            for col in encode_columns:
+            for col in sorted_encode_cols:
                 if feat == col or feat.startswith(col + "_"):
                     base_col = col
                     break
@@ -963,12 +1065,13 @@ def main():
         )
         return rdf
 
-    main_encode_set = set(encode_cols)
-    ext_encode_set  = set(ext_encode_cols) if ext_df is not None else set()
-    all_encode_set  = main_encode_set | ext_encode_set
+    # Use only the relevant encode columns for each model's report
+    main_encode_list = list(encode_cols)
+    ext_encode_list  = list(ext_encode_cols) if ext_df is not None else []
+    all_encode_list  = main_encode_list + ext_encode_list
 
-    report_main = _build_report(main_result, "MAIN_ONLY", all_encode_set)
-    report_aug  = _build_report(aug_result, "AUGMENTED", all_encode_set) if ext_df is not None else None
+    report_main = _build_report(main_result, "MAIN_ONLY", main_encode_list)
+    report_aug  = _build_report(aug_result, "AUGMENTED", all_encode_list) if ext_df is not None else None
 
     if report_aug is not None:
         report_full = pd.concat([report_main, report_aug], ignore_index=True)
