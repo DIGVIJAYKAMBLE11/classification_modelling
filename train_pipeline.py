@@ -446,7 +446,7 @@ def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scorin
     skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
     grid_search = GridSearchCV(
         estimator=xgb_base, param_grid=param_grid, scoring=scoring,
-        cv=skf, n_jobs=1, verbose=1, refit=True,
+        cv=skf, n_jobs=-1, verbose=1, refit=True,
     )
     grid_search.fit(X_train, y_train)
     best_model = grid_search.best_estimator_
@@ -458,7 +458,7 @@ def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scorin
     imp = pd.Series(best_model.feature_importances_, index=X_train.columns)
     perm_result = permutation_importance(
         best_model, X_test, y_test, n_repeats=10,
-        random_state=random_state, scoring="roc_auc", n_jobs=1,
+        random_state=random_state, scoring="roc_auc", n_jobs=-1,
     )
     perm_imp = pd.Series(perm_result.importances_mean, index=X_test.columns)
 

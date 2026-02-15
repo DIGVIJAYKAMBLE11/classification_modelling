@@ -322,11 +322,11 @@ def main():
         "**4. Model Training** — XGBoost with GridSearchCV",
         "**5. Metric Definitions** — What each metric means",
         "**6. Model Performance — Main Data** — Baseline model results",
-        "**7. Model Performance — Augmented Data** — With external data",
+        "**7. Model Performance — Augmented Data** — With InsightGenie data",
         "**8. Performance Comparison** — Main vs Augmented, Dev vs Holdout",
         "**9. KS Statistic** — Discrimination power",
         "**10. Feature Importance — Main Model** — XGB Gain & Permutation",
-        "**11. Feature Importance — Augmented Model** — Impact of external features",
+        "**11. Feature Importance — Augmented Model** — Impact of InsightGenie features",
         "**12. Column Tracking** — Full audit trail of columns",
         "**13. Features Used in Each Model** — Final feature lists",
         "**14. Key Findings & Recommendations**",
@@ -337,19 +337,19 @@ def main():
     # ================================================================
     _content_slide(prs, "1. Objective", [
         "**Goal:** Improve the Platam classification model performance by augmenting the existing "
-        "internal data with external data sources.",
+        "internal data with InsightGenie data sources.",
         "",
         "**Approach:**",
         "  - Train a baseline model using only internal/main data features",
-        "  - Train an augmented model using internal + external data features",
+        "  - Train an augmented model using internal + InsightGenie data features",
         "  - Compare performance across Dev-Test and Holdout (true out-of-sample) sets",
-        "  - Evaluate whether external data provides meaningful lift in discrimination power",
+        "  - Evaluate whether InsightGenie data provides meaningful lift in discrimination power",
         "",
-        "**External Data Sources:**",
+        "**InsightGenie Data Sources:**",
         "  - Business financials (revenue, profit, financial strength)",
         "  - Digital presence scores (trust score, online presence, digital health)",
         "  - Social media data (Google Maps reviews/ratings, Facebook engagement, Instagram metrics)",
-        "  - Fraud risk scoring (Monnai scores, fraud risk score)",
+        "  - Fraud risk scoring (InsightGenie scores, fraud risk score)",
         "  - Industry classification",
     ])
 
@@ -373,8 +373,8 @@ def main():
         "**Step 5 — Binning & Encoding**",
         "  Numerical columns binned into 5 quantile bins, then one-hot encoded",
         "",
-        "**Step 6 — External Data Pipeline**",
-        "  Same preprocessing applied to external features, then concatenated",
+        "**Step 6 — InsightGenie Data Pipeline**",
+        "  Same preprocessing applied to InsightGenie features, then concatenated",
         "",
         "**Step 7 — Model Training**",
         "  XGBoost with GridSearchCV (5-fold stratified CV, ROC AUC scoring)",
@@ -400,8 +400,8 @@ def main():
         f"**Binning Moved to Categorical:** {len(bin_moved)} columns"
         + (f" — {', '.join(bin_moved)}" if bin_moved else ""),
         "",
-        "**External Columns Pipeline:**",
-        f"  Input: {len(col_tracking.get('external_columns_input', []))} external features",
+        "**InsightGenie Columns Pipeline:**",
+        f"  Input: {len(col_tracking.get('external_columns_input', []))} InsightGenie features",
         f"  Covering: Business financials, SWOT analysis, digital scores, social media metrics",
         f"  Same preprocessing: null analysis, variation analysis, binning, OHE",
     ])
@@ -509,7 +509,7 @@ def main():
         ]
 
     _table_slide(prs,
-        "7. Model Performance — Augmented Data (Main + External)",
+        "7. Model Performance — Augmented Data (Main + InsightGenie)",
         ["Metric", "Dev Test", "Holdout (OOS)"],
         aug_rows,
         col_widths=[Inches(4), Inches(4), Inches(4)],
@@ -588,6 +588,9 @@ def main():
     report_df = None
     if os.path.isfile(report_path):
         report_df = pd.read_csv(report_path)
+        # Rename monnai -> insightgenie in displayed feature names
+        for col in ["ohe_feature", "original_column"]:
+            report_df[col] = report_df[col].str.replace("monnai", "insightgenie", regex=False)
 
     if report_df is not None:
         main_report = report_df[report_df["model"] == "MAIN_ONLY"].copy()
@@ -658,7 +661,7 @@ def main():
                 col_widths=[Inches(3.5), Inches(2.5), Inches(1.5), Inches(1.2), Inches(2), Inches(1.5)],
             )
 
-            # Extra slide: External features contribution
+            # Extra slide: InsightGenie features contribution
             ext_columns_input = col_tracking.get("external_columns_input", [])
             ext_encode_cols_list = col_meta.get("ext_encode_cols", [])
             ext_features_in_model = aug_used[aug_used["original_column"].isin(
@@ -677,7 +680,7 @@ def main():
                     ])
 
                 _table_slide(prs,
-                    "11b. External Features — Contribution to Augmented Model",
+                    "11b. InsightGenie Features — Contribution to Augmented Model",
                     ["OHE Feature", "Original Column", "XGB Gain", "Perm Importance (AUC Drop)"],
                     ext_fi_rows,
                     col_widths=[Inches(4), Inches(3), Inches(2.5), Inches(2.5)],
@@ -685,18 +688,18 @@ def main():
         else:
             _content_slide(prs,
                 "11. Feature Importance — Augmented Model",
-                ["No augmented model results available (no external data was used)."])
+                ["No augmented model results available (no InsightGenie data was used)."])
     else:
         _content_slide(prs,
             "11. Feature Importance — Augmented Model",
             [
-                "**With External Data Augmentation:**",
-                "  The augmented model includes external features from business financials,",
+                "**With InsightGenie Data Augmentation:**",
+                "  The augmented model includes InsightGenie features from business financials,",
                 "  digital presence, social media, and fraud risk scoring.",
                 "",
                 "**Key analysis:**",
-                "  - XGB Gain: Which external features the model uses most in tree splits",
-                "  - Perm Importance (AUC Drop): Which external features truly improve predictions",
+                "  - XGB Gain: Which InsightGenie features the model uses most in tree splits",
+                "  - Perm Importance (AUC Drop): Which InsightGenie features truly improve predictions",
                 "  - Features with high gain but low perm importance are noise — auto-dropped",
                 "",
                 "(Detailed table will be populated after training)",
@@ -718,8 +721,8 @@ def main():
         ]
         if "external_columns_input" in col_tracking:
             tracking_rows.extend([
-                ["External Columns Input", str(len(col_tracking.get("external_columns_input", [])))],
-                ["External Columns Binned", str(len(col_tracking.get("external_columns_binned", [])))],
+                ["InsightGenie Columns Input", str(len(col_tracking.get("external_columns_input", [])))],
+                ["InsightGenie Columns Binned", str(len(col_tracking.get("external_columns_binned", [])))],
                 ["Augmented Model Features Used", str(len(col_tracking.get("augmented_model_features_used", [])))],
                 ["Augmented Model Features Dropped", str(len(col_tracking.get("augmented_model_features_dropped", [])))],
             ])
@@ -773,7 +776,7 @@ def main():
             aug_feat_bullets.append(f"  ... and {len(aug_dropped) - 20} more")
 
     if not aug_features and not aug_dropped:
-        aug_feat_bullets = ["No augmented model (no external data used)."]
+        aug_feat_bullets = ["No augmented model (no InsightGenie data used)."]
 
     _content_slide(prs, "13b. Features — Augmented Model", aug_feat_bullets)
 
@@ -792,7 +795,7 @@ def main():
     else:
         findings.append("  (Metrics pending)")
 
-    findings.extend(["", "**Augmented Model (Main + External Data):**"])
+    findings.extend(["", "**Augmented Model (Main + InsightGenie Data):**"])
     if test_metrics_aug:
         findings.append(
             f"  AUC = {fmt(test_metrics_aug.get('AUC (ROC)'))}, "
@@ -829,9 +832,9 @@ def main():
     findings.extend([
         "",
         "**Recommendations:**",
-        "  - Review the external features with high permutation importance for production inclusion",
+        "  - Review the InsightGenie features with high permutation importance for production inclusion",
         "  - Monitor model stability with periodic holdout validation",
-        "  - Consider feature engineering on top-contributing external features",
+        "  - Consider feature engineering on top-contributing InsightGenie features",
     ])
 
     _content_slide(prs, "14. Key Findings & Recommendations", findings)
