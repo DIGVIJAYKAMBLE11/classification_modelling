@@ -1044,23 +1044,23 @@ def main():
                 "ohe_feature": feat,
                 "original_column": base_col,
                 "status": status,
-                "xgb_gain": round(g, 6) if not np.isnan(g) else "",
-                "xgb_gain_rank": "",
-                "perm_importance_auc_drop": round(p, 6) if not np.isnan(p) else "",
-                "perm_importance_rank": "",
+                "xgb_gain": round(g, 6) if not np.isnan(g) else np.nan,
+                "xgb_gain_rank": np.nan,
+                "perm_importance_auc_drop": round(p, 6) if not np.isnan(p) else np.nan,
+                "perm_importance_rank": np.nan,
                 "drop_reason": reason,
             })
 
         rdf = pd.DataFrame(rows)
-        # Compute ranks only for non-empty values
-        mask_g = rdf["xgb_gain"] != ""
+        # Compute ranks only for non-null values
+        mask_g = rdf["xgb_gain"].notna()
         rdf.loc[mask_g, "xgb_gain_rank"] = (
-            rdf.loc[mask_g, "xgb_gain"].astype(float)
+            rdf.loc[mask_g, "xgb_gain"]
             .rank(ascending=False).astype(int)
         )
-        mask_p = rdf["perm_importance_auc_drop"] != ""
+        mask_p = rdf["perm_importance_auc_drop"].notna()
         rdf.loc[mask_p, "perm_importance_rank"] = (
-            rdf.loc[mask_p, "perm_importance_auc_drop"].astype(float)
+            rdf.loc[mask_p, "perm_importance_auc_drop"]
             .rank(ascending=False).astype(int)
         )
         return rdf
