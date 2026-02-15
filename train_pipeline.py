@@ -1045,24 +1045,14 @@ def main():
                 "original_column": base_col,
                 "status": status,
                 "xgb_gain": round(g, 6) if not np.isnan(g) else np.nan,
-                "xgb_gain_rank": np.nan,
                 "perm_importance_auc_drop": round(p, 6) if not np.isnan(p) else np.nan,
-                "perm_importance_rank": np.nan,
                 "drop_reason": reason,
             })
 
         rdf = pd.DataFrame(rows)
-        # Compute ranks only for non-null values
-        mask_g = rdf["xgb_gain"].notna()
-        rdf.loc[mask_g, "xgb_gain_rank"] = (
-            rdf.loc[mask_g, "xgb_gain"]
-            .rank(ascending=False).astype(int)
-        )
-        mask_p = rdf["perm_importance_auc_drop"].notna()
-        rdf.loc[mask_p, "perm_importance_rank"] = (
-            rdf.loc[mask_p, "perm_importance_auc_drop"]
-            .rank(ascending=False).astype(int)
-        )
+        # Compute ranks as new columns (avoids .loc dtype issues with string-backed frames)
+        rdf["xgb_gain_rank"] = rdf["xgb_gain"].rank(ascending=False, na_option="keep")
+        rdf["perm_importance_rank"] = rdf["perm_importance_auc_drop"].rank(ascending=False, na_option="keep")
         return rdf
 
     # Use only the relevant encode columns for each model's report
