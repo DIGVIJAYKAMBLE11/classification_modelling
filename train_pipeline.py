@@ -139,6 +139,12 @@ DROP_LOW_VARIATION = [
     "clr_rent",
 ]
 
+# ── Column type overrides ─────────────────────────────────────────
+# Columns with ≤10 unique values are auto-classified as categorical.
+# List columns here that should stay numeric despite low cardinality.
+CAT_NUNIQUE_THRESHOLD = 10
+FORCE_NUMERIC = []   # e.g. ["creditos_mora", "hist_neg_12m"]
+
 # ── Binning ────────────────────────────────────────────────────────
 N_BINS           = 5
 BINNING_STRATEGY = "quantile"
@@ -223,6 +229,8 @@ EXT_COLUMNS = [
 EXT_NULL_THRESHOLD_PCT    = NULL_THRESHOLD_PCT
 EXT_VARIATION_THRESHOLD   = VARIATION_THRESHOLD
 EXT_DROP_LOW_VARIATION    = []
+EXT_CAT_NUNIQUE_THRESHOLD = CAT_NUNIQUE_THRESHOLD
+EXT_FORCE_NUMERIC         = []   # e.g. ["trust_score", "strengths_count"]
 EXT_N_BINS                = N_BINS
 EXT_BINNING_STRATEGY      = BINNING_STRATEGY
 EXT_CUSTOM_BINS           = {}
@@ -293,8 +301,13 @@ def variation_analysis(dataframe, columns, target_col, threshold):
     return flagged, scores
 
 
-def identify_col_types(dataframe, feature_cols):
-    cat = [c for c in feature_cols if not pd.api.types.is_numeric_dtype(dataframe[c]) or dataframe[c].nunique() <= 10]
+def identify_col_types(dataframe, feature_cols, nunique_threshold=10,
+                       force_numeric=None):
+    force_numeric = set(force_numeric or [])
+    cat = [c for c in feature_cols
+           if c not in force_numeric
+           and (not pd.api.types.is_numeric_dtype(dataframe[c])
+                or dataframe[c].nunique() <= nunique_threshold)]
     num = [c for c in feature_cols if c not in cat]
     return cat, num
 
@@ -631,8 +644,12 @@ def main():
     # ── 5. Identify column types ───────────────────────────────────
     print("\n[5] Identifying column types ...")
     feature_cols = [c for c in df.columns if c != TARGET_COL]
-    cat_cols, num_cols = identify_col_types(df, feature_cols)
+    cat_cols, num_cols = identify_col_types(df, feature_cols, CAT_NUNIQUE_THRESHOLD, FORCE_NUMERIC)
     print(f"  Categorical: {len(cat_cols)} | Numerical: {len(num_cols)}")
+    if FORCE_NUMERIC:
+        forced = [c for c in FORCE_NUMERIC if c in num_cols]
+        if forced:
+            print(f"  Forced numeric (override): {forced}")
 
     # ── 6. Binning ─────────────────────────────────────────────────
     print("\n[6] Binning numerical columns ...")
@@ -696,8 +713,13 @@ def main():
         # Types, binning, OHE
         ext_feature_cols = [c for c in ext_df.columns if c != TARGET_COL]
         if len(ext_feature_cols) > 0:
-            ext_cat_cols, ext_num_cols = identify_col_types(ext_df, ext_feature_cols)
+            ext_cat_cols, ext_num_cols = identify_col_types(
+                ext_df, ext_feature_cols, EXT_CAT_NUNIQUE_THRESHOLD, EXT_FORCE_NUMERIC)
             print(f"  Ext categorical: {len(ext_cat_cols)} | Ext numerical: {len(ext_num_cols)}")
+            if EXT_FORCE_NUMERIC:
+                forced_ext = [c for c in EXT_FORCE_NUMERIC if c in ext_num_cols]
+                if forced_ext:
+                    print(f"  Ext forced numeric (override): {forced_ext}")
             if ext_num_cols:
                 ext_df, ext_bin_edges_store, ext_binning_moved, ext_binning_dropped = bin_columns(
                     ext_df, ext_num_cols, EXT_N_BINS, EXT_BINNING_STRATEGY, EXT_CUSTOM_BINS, ext_bin_edges_store,
