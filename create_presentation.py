@@ -738,7 +738,7 @@ def main():
             ["(Column tracking data will be populated after training)"])
 
     # ================================================================
-    # SLIDE 15a: Features Used — Main Model (Complete List)
+    # SLIDE 15a: Features Used — Main Model (Every OHE column)
     # ================================================================
     main_features = col_tracking.get("main_model_features_used", [])
     main_dropped = col_tracking.get("main_model_features_dropped", [])
@@ -746,18 +746,19 @@ def main():
     if report_df is not None:
         main_report = report_df[report_df["model"] == "MAIN_ONLY"].copy()
         main_used = main_report[main_report["status"] == "USED"].copy()
+        main_used = main_used.sort_values(
+            ["original_column", "ohe_feature"])
 
-        # Get unique original columns and count of OHE features per column
-        orig_col_counts = main_used.groupby("original_column").size().reset_index(name="ohe_count")
-        orig_col_counts = orig_col_counts.sort_values("ohe_count", ascending=False)
         total_ohe = len(main_used)
-        total_orig = len(orig_col_counts)
+        total_orig = main_used["original_column"].nunique()
 
         feat_rows = []
-        for i, (_, row) in enumerate(orig_col_counts.iterrows(), 1):
-            feat_rows.append([str(i), row["original_column"], str(row["ohe_count"])])
+        for i, (_, row) in enumerate(main_used.iterrows(), 1):
+            feat_rows.append([
+                str(i), row["ohe_feature"], row["original_column"],
+            ])
 
-        MAX_PER_SLIDE = 18
+        MAX_PER_SLIDE = 20
         num_slides = max(1, (len(feat_rows) + MAX_PER_SLIDE - 1) // MAX_PER_SLIDE)
         for slide_idx in range(num_slides):
             start = slide_idx * MAX_PER_SLIDE
@@ -765,9 +766,9 @@ def main():
             chunk = feat_rows[start:end]
             suffix = f" (Page {slide_idx + 1}/{num_slides})" if num_slides > 1 else ""
             _table_slide(prs,
-                f"13a. All Features Used — Main Model "
-                f"({total_orig} columns, {total_ohe} OHE features){suffix}",
-                ["#", "Original Column", "OHE Features"],
+                f"13a. All OHE Features Used — Main Model "
+                f"({total_ohe} features from {total_orig} columns){suffix}",
+                ["#", "OHE Feature", "Original Column"],
                 chunk,
                 col_widths=[Inches(1), Inches(7), Inches(4)],
             )
@@ -786,7 +787,7 @@ def main():
         _content_slide(prs, "13a. Features — Main Model", main_feat_bullets)
 
     # ================================================================
-    # SLIDE 15b: Features Used — Augmented Model (Complete List)
+    # SLIDE 15b: Features Used — Augmented Model (Every OHE column)
     # ================================================================
     aug_features = col_tracking.get("augmented_model_features_used", [])
     aug_dropped = col_tracking.get("augmented_model_features_dropped", [])
@@ -797,29 +798,26 @@ def main():
             aug_used = aug_report[aug_report["status"] == "USED"].copy()
             ext_encode_cols_set = set(col_meta.get("ext_encode_cols", []))
 
-            # Get unique original columns with count and source
-            orig_col_counts = aug_used.groupby("original_column").size().reset_index(
-                name="ohe_count")
-            orig_col_counts["source"] = orig_col_counts["original_column"].apply(
+            aug_used = aug_used.copy()
+            aug_used["source"] = aug_used["original_column"].apply(
                 lambda x: "InsightGenie" if x in ext_encode_cols_set else "Main"
             )
-            orig_col_counts = orig_col_counts.sort_values(
-                ["source", "ohe_count"], ascending=[True, False]
-            )
+            aug_used = aug_used.sort_values(
+                ["source", "original_column", "ohe_feature"])
 
             total_ohe = len(aug_used)
-            total_orig = len(orig_col_counts)
-            n_main = len(orig_col_counts[orig_col_counts["source"] == "Main"])
-            n_ext = len(orig_col_counts[orig_col_counts["source"] == "InsightGenie"])
+            total_orig = aug_used["original_column"].nunique()
+            n_main_ohe = len(aug_used[aug_used["source"] == "Main"])
+            n_ext_ohe = len(aug_used[aug_used["source"] == "InsightGenie"])
 
             feat_rows = []
-            for i, (_, row) in enumerate(orig_col_counts.iterrows(), 1):
+            for i, (_, row) in enumerate(aug_used.iterrows(), 1):
                 feat_rows.append([
-                    str(i), row["original_column"], row["source"],
-                    str(row["ohe_count"]),
+                    str(i), row["ohe_feature"], row["original_column"],
+                    row["source"],
                 ])
 
-            MAX_PER_SLIDE = 18
+            MAX_PER_SLIDE = 20
             num_slides = max(1, (len(feat_rows) + MAX_PER_SLIDE - 1) // MAX_PER_SLIDE)
             for slide_idx in range(num_slides):
                 start = slide_idx * MAX_PER_SLIDE
@@ -827,10 +825,10 @@ def main():
                 chunk = feat_rows[start:end]
                 suffix = f" (Page {slide_idx + 1}/{num_slides})" if num_slides > 1 else ""
                 _table_slide(prs,
-                    f"13b. All Features Used — Augmented Model "
-                    f"({n_main} Main + {n_ext} InsightGenie, "
-                    f"{total_ohe} OHE features){suffix}",
-                    ["#", "Original Column", "Source", "OHE Features"],
+                    f"13b. All OHE Features Used — Augmented Model "
+                    f"({n_main_ohe} Main + {n_ext_ohe} InsightGenie = "
+                    f"{total_ohe} features){suffix}",
+                    ["#", "OHE Feature", "Original Column", "Source"],
                     chunk,
                     col_widths=[Inches(1), Inches(5), Inches(3), Inches(3)],
                 )
