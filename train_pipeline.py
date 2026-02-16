@@ -261,7 +261,7 @@ ADD_BACK_FEATURES  = []
 EXTRA_DROP_FEATURES = []
 
 # ── Artefact directory ─────────────────────────────────────────────
-ARTEFACT_DIR = str(Path.home() / "ml_artefacts")
+ARTEFACT_DIR = "artefacts"
 
 
 # ╔══════════════════════════════════════════════════════════════════╗

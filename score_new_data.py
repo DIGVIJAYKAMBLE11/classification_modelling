@@ -12,7 +12,7 @@ Usage:
   python score_new_data.py --data new_data.csv --output predictions.csv
   python score_new_data.py --data new_data.csv --output predictions.csv --threshold 0.4
 
-The script expects artefacts in ~/ml_artefacts (or override with --artefact-dir).
+The script expects artefacts in artefacts/ (or override with --artefact-dir).
 """
 
 import argparse
@@ -155,8 +155,8 @@ def main():
     )
     parser.add_argument(
         "--artefact-dir",
-        default=str(Path.home() / "ml_artefacts"),
-        help="Path to the artefact directory (default: ~/ml_artefacts).",
+        default="artefacts",
+        help="Path to the artefact directory (default: artefacts/).",
     )
     parser.add_argument(
         "--threshold",

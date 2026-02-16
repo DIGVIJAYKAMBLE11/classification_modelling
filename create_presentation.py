@@ -5,7 +5,7 @@ metrics, feature importance, and augmented data analysis.
 Usage:
     python create_presentation.py
 
-Reads artefact JSON files from ~/ml_artefacts (if they exist) and embeds
+Reads artefact JSON files from artefacts/ (if they exist) and embeds
 the actual numbers.  If artefacts are not yet available it uses placeholder
 text so the deck structure is ready for Monday.
 """
@@ -20,7 +20,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
 
-ARTEFACT_DIR = str(Path.home() / "ml_artefacts")
+ARTEFACT_DIR = "artefacts"
 OUTPUT_PATH = "Classification_Model_Presentation.pptx"
 
 # ── Colour palette ──────────────────────────────────────────────────
@@ -738,47 +738,120 @@ def main():
             ["(Column tracking data will be populated after training)"])
 
     # ================================================================
-    # SLIDE 15: Features Used — Main Model
+    # SLIDE 15a: Features Used — Main Model (Complete List)
     # ================================================================
     main_features = col_tracking.get("main_model_features_used", [])
     main_dropped = col_tracking.get("main_model_features_dropped", [])
 
-    main_feat_bullets = [
-        f"**Total features used:** {len(main_features)}",
-        f"**Features dropped (auto-flag):** {len(main_dropped)}",
-        "",
-        "**Dropped features" + (f" ({len(main_dropped)}):" if main_dropped else " (none):") + "**",
-    ]
-    if main_dropped:
-        for f in main_dropped[:20]:
-            main_feat_bullets.append(f"  - {f}")
-        if len(main_dropped) > 20:
-            main_feat_bullets.append(f"  ... and {len(main_dropped) - 20} more")
+    if report_df is not None:
+        main_report = report_df[report_df["model"] == "MAIN_ONLY"].copy()
+        main_used = main_report[main_report["status"] == "USED"].copy()
 
-    _content_slide(prs, "13a. Features — Main Model", main_feat_bullets)
+        # Get unique original columns and count of OHE features per column
+        orig_col_counts = main_used.groupby("original_column").size().reset_index(name="ohe_count")
+        orig_col_counts = orig_col_counts.sort_values("ohe_count", ascending=False)
+        total_ohe = len(main_used)
+        total_orig = len(orig_col_counts)
+
+        feat_rows = []
+        for i, (_, row) in enumerate(orig_col_counts.iterrows(), 1):
+            feat_rows.append([str(i), row["original_column"], str(row["ohe_count"])])
+
+        MAX_PER_SLIDE = 18
+        num_slides = max(1, (len(feat_rows) + MAX_PER_SLIDE - 1) // MAX_PER_SLIDE)
+        for slide_idx in range(num_slides):
+            start = slide_idx * MAX_PER_SLIDE
+            end = min(start + MAX_PER_SLIDE, len(feat_rows))
+            chunk = feat_rows[start:end]
+            suffix = f" (Page {slide_idx + 1}/{num_slides})" if num_slides > 1 else ""
+            _table_slide(prs,
+                f"13a. All Features Used — Main Model "
+                f"({total_orig} columns, {total_ohe} OHE features){suffix}",
+                ["#", "Original Column", "OHE Features"],
+                chunk,
+                col_widths=[Inches(1), Inches(7), Inches(4)],
+            )
+    else:
+        # Fallback: list features from column_tracking
+        main_feat_bullets = [
+            f"**Total features used:** {len(main_features)}",
+            f"**Features dropped (auto-flag):** {len(main_dropped)}",
+            "",
+            "**Features used:**",
+        ]
+        for f_name in main_features[:40]:
+            main_feat_bullets.append(f"  - {f_name}")
+        if len(main_features) > 40:
+            main_feat_bullets.append(f"  ... and {len(main_features) - 40} more")
+        _content_slide(prs, "13a. Features — Main Model", main_feat_bullets)
 
     # ================================================================
-    # SLIDE 16: Features Used — Augmented Model
+    # SLIDE 15b: Features Used — Augmented Model (Complete List)
     # ================================================================
     aug_features = col_tracking.get("augmented_model_features_used", [])
     aug_dropped = col_tracking.get("augmented_model_features_dropped", [])
 
-    aug_feat_bullets = [
-        f"**Total features used:** {len(aug_features)}",
-        f"**Features dropped (auto-flag):** {len(aug_dropped)}",
-        "",
-        "**Dropped features" + (f" ({len(aug_dropped)}):" if aug_dropped else " (none):") + "**",
-    ]
-    if aug_dropped:
-        for f in aug_dropped[:20]:
-            aug_feat_bullets.append(f"  - {f}")
-        if len(aug_dropped) > 20:
-            aug_feat_bullets.append(f"  ... and {len(aug_dropped) - 20} more")
+    if report_df is not None:
+        aug_report = report_df[report_df["model"] == "AUGMENTED"].copy()
+        if len(aug_report) > 0:
+            aug_used = aug_report[aug_report["status"] == "USED"].copy()
+            ext_encode_cols_set = set(col_meta.get("ext_encode_cols", []))
 
-    if not aug_features and not aug_dropped:
-        aug_feat_bullets = ["No augmented model (no InsightGenie data used)."]
+            # Get unique original columns with count and source
+            orig_col_counts = aug_used.groupby("original_column").size().reset_index(
+                name="ohe_count")
+            orig_col_counts["source"] = orig_col_counts["original_column"].apply(
+                lambda x: "InsightGenie" if x in ext_encode_cols_set else "Main"
+            )
+            orig_col_counts = orig_col_counts.sort_values(
+                ["source", "ohe_count"], ascending=[True, False]
+            )
 
-    _content_slide(prs, "13b. Features — Augmented Model", aug_feat_bullets)
+            total_ohe = len(aug_used)
+            total_orig = len(orig_col_counts)
+            n_main = len(orig_col_counts[orig_col_counts["source"] == "Main"])
+            n_ext = len(orig_col_counts[orig_col_counts["source"] == "InsightGenie"])
+
+            feat_rows = []
+            for i, (_, row) in enumerate(orig_col_counts.iterrows(), 1):
+                feat_rows.append([
+                    str(i), row["original_column"], row["source"],
+                    str(row["ohe_count"]),
+                ])
+
+            MAX_PER_SLIDE = 18
+            num_slides = max(1, (len(feat_rows) + MAX_PER_SLIDE - 1) // MAX_PER_SLIDE)
+            for slide_idx in range(num_slides):
+                start = slide_idx * MAX_PER_SLIDE
+                end = min(start + MAX_PER_SLIDE, len(feat_rows))
+                chunk = feat_rows[start:end]
+                suffix = f" (Page {slide_idx + 1}/{num_slides})" if num_slides > 1 else ""
+                _table_slide(prs,
+                    f"13b. All Features Used — Augmented Model "
+                    f"({n_main} Main + {n_ext} InsightGenie, "
+                    f"{total_ohe} OHE features){suffix}",
+                    ["#", "Original Column", "Source", "OHE Features"],
+                    chunk,
+                    col_widths=[Inches(1), Inches(5), Inches(3), Inches(3)],
+                )
+        else:
+            _content_slide(prs, "13b. Features — Augmented Model",
+                ["No augmented model results available."])
+    else:
+        # Fallback: list features from column_tracking
+        aug_feat_bullets = [
+            f"**Total features used:** {len(aug_features)}",
+            f"**Features dropped (auto-flag):** {len(aug_dropped)}",
+            "",
+            "**Features used:**",
+        ]
+        for f_name in aug_features[:40]:
+            aug_feat_bullets.append(f"  - {f_name}")
+        if len(aug_features) > 40:
+            aug_feat_bullets.append(f"  ... and {len(aug_features) - 40} more")
+        if not aug_features and not aug_dropped:
+            aug_feat_bullets = ["No augmented model (no InsightGenie data used)."]
+        _content_slide(prs, "13b. Features — Augmented Model", aug_feat_bullets)
 
     # ================================================================
     # SLIDE 17: Key Findings & Recommendations
