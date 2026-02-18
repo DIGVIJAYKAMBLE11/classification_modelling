@@ -706,29 +706,42 @@ def main():
             ])
 
     # ================================================================
-    # SLIDE 14: Column Tracking
+    # SLIDE 14: Column Trail Summary (running counts per step)
     # ================================================================
-    if col_tracking:
+    trail_summary_path = os.path.join(ARTEFACT_DIR, "column_trail_summary.csv")
+    trail_report_path = os.path.join(ARTEFACT_DIR, "column_trail_report.csv")
+    trail_summary_df = None
+    trail_report_df = None
+    if os.path.isfile(trail_summary_path):
+        trail_summary_df = pd.read_csv(trail_summary_path)
+    if os.path.isfile(trail_report_path):
+        trail_report_df = pd.read_csv(trail_report_path)
+
+    if trail_summary_df is not None:
+        for src_label in trail_summary_df["source"].unique():
+            src_data = trail_summary_df[trail_summary_df["source"] == src_label]
+            summary_rows = []
+            for _, row in src_data.iterrows():
+                summary_rows.append([
+                    row["step"], str(row["columns_dropped"]),
+                    str(row["columns_remaining"]),
+                ])
+            _table_slide(prs,
+                f"12. Column Trail — {src_label} (Running Counts)",
+                ["Pipeline Step", "Columns Dropped", "Columns Remaining"],
+                summary_rows,
+                col_widths=[Inches(5), Inches(3.5), Inches(3.5)],
+            )
+    elif col_tracking:
         tracking_rows = [
             ["Initial Main Features", str(len(col_tracking.get("initial_columns", [])))],
             ["Dropped by Null Analysis", str(len(col_tracking.get("dropped_by_null_analysis", [])))],
             ["Dropped by Low Variation", str(len(col_tracking.get("dropped_by_variation", [])))],
-            ["Successfully Binned", str(len(col_tracking.get("numerical_columns_binned", [])))],
-            ["Moved to Categorical (binning)", str(len(col_tracking.get("binning_moved_to_categorical", [])))],
             ["Columns After OHE (Main)", str(len(col_tracking.get("columns_after_ohe", [])))],
             ["Main Model Features Used", str(len(col_tracking.get("main_model_features_used", [])))],
-            ["Main Model Features Dropped", str(len(col_tracking.get("main_model_features_dropped", [])))],
         ]
-        if "external_columns_input" in col_tracking:
-            tracking_rows.extend([
-                ["InsightGenie Columns Input", str(len(col_tracking.get("external_columns_input", [])))],
-                ["InsightGenie Columns Binned", str(len(col_tracking.get("external_columns_binned", [])))],
-                ["Augmented Model Features Used", str(len(col_tracking.get("augmented_model_features_used", [])))],
-                ["Augmented Model Features Dropped", str(len(col_tracking.get("augmented_model_features_dropped", [])))],
-            ])
-
         _table_slide(prs,
-            "12. Column Tracking — Full Audit Trail",
+            "12. Column Tracking — Summary",
             ["Stage", "Count"],
             tracking_rows,
             col_widths=[Inches(7), Inches(5)],
@@ -736,6 +749,57 @@ def main():
     else:
         _content_slide(prs, "12. Column Tracking",
             ["(Column tracking data will be populated after training)"])
+
+    # ================================================================
+    # SLIDE 14b: Detailed Column Trail (per-column boolean breakdown)
+    # ================================================================
+    if trail_report_df is not None:
+        for src_label in trail_report_df["source"].unique():
+            src = trail_report_df[trail_report_df["source"] == src_label].copy()
+            # Collapse to one row per original column (show OHE count)
+            grouped = src.groupby("original_column", sort=False).agg(
+                column_type=("column_type", "first"),
+                dropped_null=("dropped_null_analysis", "first"),
+                flagged_var=("flagged_low_variation", "first"),
+                dropped_var=("dropped_low_variation", "first"),
+                binning_result=("binning_result", "first"),
+                ohe_count=("ohe_feature", lambda x: sum(1 for v in x if v != "—")),
+                used_main=("finally_used_main", "sum"),
+                used_aug=("finally_used_aug", "sum"),
+            ).reset_index()
+
+            trail_rows = []
+            for _, row in grouped.iterrows():
+                yn = lambda v: "Yes" if v else "No"
+                trail_rows.append([
+                    row["original_column"],
+                    str(row["column_type"]),
+                    yn(row["dropped_null"]),
+                    yn(row["flagged_var"]),
+                    yn(row["dropped_var"]),
+                    str(row["binning_result"]),
+                    str(int(row["ohe_count"])),
+                    str(int(row["used_main"])),
+                    str(int(row["used_aug"])),
+                ])
+
+            MAX_PER_SLIDE = 16
+            num_slides = max(1, (len(trail_rows) + MAX_PER_SLIDE - 1) // MAX_PER_SLIDE)
+            for slide_idx in range(num_slides):
+                start = slide_idx * MAX_PER_SLIDE
+                end = min(start + MAX_PER_SLIDE, len(trail_rows))
+                chunk = trail_rows[start:end]
+                suffix = f" (Page {slide_idx + 1}/{num_slides})" if num_slides > 1 else ""
+                _table_slide(prs,
+                    f"12b. Column Trail — {src_label} Detail{suffix}",
+                    ["Column", "Type", "Null\nDrop", "Var\nFlag",
+                     "Var\nDrop", "Binning", "OHE\nCols",
+                     "Used\nMain", "Used\nAug"],
+                    chunk,
+                    col_widths=[Inches(2.6), Inches(1.2), Inches(0.8),
+                                Inches(0.8), Inches(0.8), Inches(2),
+                                Inches(0.8), Inches(0.8), Inches(0.8)],
+                )
 
     # ================================================================
     # SLIDE 15a: Features Used — Main Model (Every OHE column)

@@ -126,6 +126,7 @@ COLUMNS_LIST = [
     "clr_sr_opinion_relationship_duration",
     "clr_agent_recommendation",
     "clr_agent_loc",
+    "industry",
 ]
 
 # ── Null threshold ─────────────────────────────────────────────────
@@ -161,7 +162,6 @@ EXT_COLUMNS = [
     "rating",
     "user_ratings_total",
     "photo_count",
-    "industry",
     "industry_confidence",
     "gross_revenue_midpoint",
     "gross_revenue_low",
@@ -645,6 +645,8 @@ def main():
     print("\n[5] Identifying column types ...")
     feature_cols = [c for c in df.columns if c != TARGET_COL]
     cat_cols, num_cols = identify_col_types(df, feature_cols, CAT_NUNIQUE_THRESHOLD, FORCE_NUMERIC)
+    original_cat_cols = list(cat_cols)  # snapshot before binning modifies these
+    original_num_cols = list(num_cols)
     print(f"  Categorical: {len(cat_cols)} | Numerical: {len(num_cols)}")
     if FORCE_NUMERIC:
         forced = [c for c in FORCE_NUMERIC if c in num_cols]
@@ -684,6 +686,12 @@ def main():
     ext_cat_cols = []
     ext_num_cols = []
     ext_df = None
+    ext_null_drops = []
+    ext_flagged = []
+    ext_binning_moved = []
+    ext_binning_dropped = []
+    ext_original_cat_cols = []
+    ext_original_num_cols = []
 
     if EXT_COLUMNS and len(EXT_COLUMNS) > 0:
         print("\n[8] External columns pipeline ...")
@@ -715,6 +723,8 @@ def main():
         if len(ext_feature_cols) > 0:
             ext_cat_cols, ext_num_cols = identify_col_types(
                 ext_df, ext_feature_cols, EXT_CAT_NUNIQUE_THRESHOLD, EXT_FORCE_NUMERIC)
+            ext_original_cat_cols = list(ext_cat_cols)
+            ext_original_num_cols = list(ext_num_cols)
             print(f"  Ext categorical: {len(ext_cat_cols)} | Ext numerical: {len(ext_num_cols)}")
             if EXT_FORCE_NUMERIC:
                 forced_ext = [c for c in EXT_FORCE_NUMERIC if c in ext_num_cols]
@@ -1092,6 +1102,238 @@ def main():
 
     report_path = os.path.join(ARTEFACT_DIR, "predictor_report.csv")
     report_full.to_csv(report_path, index=False)
+
+    # ── Column Trail Report (comprehensive CSV) ───────────────────
+    print("\n  Building column trail report ...")
+
+    def _ohe_features_by_col(encoder, enc_cols):
+        """Map each encode-column to its list of OHE feature names."""
+        if encoder is None or not enc_cols:
+            return {}
+        all_feats = encoder.get_feature_names_out(enc_cols)
+        sorted_enc = sorted(enc_cols, key=len, reverse=True)
+        mapping = {}
+        for feat in all_feats:
+            for col in sorted_enc:
+                if feat == col or feat.startswith(col + "_"):
+                    mapping.setdefault(col, []).append(feat)
+                    break
+        return mapping
+
+    def _process_columns_for_trail(
+        source_label, initial_cols, target_col,
+        null_drops_list, flagged_var_list, dropped_var_list,
+        orig_cat_list, orig_num_list,
+        bin_store, binning_moved_list, binning_dropped_list,
+        enc_cols, encoder,
+        main_result, aug_result, include_in_main,
+    ):
+        """Build trail rows for one source (Main or InsightGenie)."""
+        rows = []
+        null_set = set(null_drops_list)
+        flagged_set = set(flagged_var_list)
+        dropped_var_set = set(dropped_var_list)
+        cat_set = set(orig_cat_list)
+        num_set = set(orig_num_list)
+        binned_set = set(bin_store.keys())
+        moved_set = set(binning_moved_list)
+        bin_drop_set = set(binning_dropped_list)
+
+        main_used = set(main_result["X_train"].columns.tolist())
+        main_sus = set(main_result["feature_drop_info"]["auto_flagged_suspicious"])
+        main_drop = set(main_result["feature_drop_info"]["final_dropped"])
+
+        aug_used, aug_sus, aug_drop = set(), set(), set()
+        if aug_result is not None:
+            aug_used = set(aug_result["X_train"].columns.tolist())
+            aug_sus = set(aug_result["feature_drop_info"]["auto_flagged_suspicious"])
+            aug_drop = set(aug_result["feature_drop_info"]["final_dropped"])
+
+        ohe_map = _ohe_features_by_col(encoder, enc_cols)
+
+        cols = [c for c in initial_cols if c != target_col]
+        for col in cols:
+            is_null = col in null_set
+            is_flag_var = col in flagged_set
+            is_drop_var = col in dropped_var_set
+
+            # --- Dropped before type classification ---
+            if is_null or is_drop_var:
+                rows.append({
+                    "source": source_label,
+                    "original_column": col,
+                    "column_type": "—",
+                    "dropped_null_analysis": is_null,
+                    "flagged_low_variation": is_flag_var,
+                    "dropped_low_variation": is_drop_var,
+                    "binning_result": "—",
+                    "ohe_feature": "—",
+                    "flagged_suspicious_main": False,
+                    "dropped_suspicious_main": False,
+                    "finally_used_main": False,
+                    "flagged_suspicious_aug": False,
+                    "dropped_suspicious_aug": False,
+                    "finally_used_aug": False,
+                })
+                continue
+
+            # --- Column type (from pre-binning snapshot) ---
+            col_type = "categorical" if col in cat_set else (
+                "numerical" if col in num_set else "unknown")
+
+            # --- Binning result ---
+            if col in num_set:
+                if col in binned_set:
+                    bin_result = "binned"
+                    ohe_key = col + "_bin"
+                elif col in moved_set:
+                    bin_result = "moved_to_categorical"
+                    ohe_key = col
+                elif col in bin_drop_set:
+                    bin_result = "dropped"
+                    rows.append({
+                        "source": source_label,
+                        "original_column": col,
+                        "column_type": col_type,
+                        "dropped_null_analysis": False,
+                        "flagged_low_variation": is_flag_var,
+                        "dropped_low_variation": False,
+                        "binning_result": "dropped",
+                        "ohe_feature": "—",
+                        "flagged_suspicious_main": False,
+                        "dropped_suspicious_main": False,
+                        "finally_used_main": False,
+                        "flagged_suspicious_aug": False,
+                        "dropped_suspicious_aug": False,
+                        "finally_used_aug": False,
+                    })
+                    continue
+                else:
+                    bin_result = "binned"
+                    ohe_key = col + "_bin"
+            else:
+                bin_result = "N/A (categorical)"
+                ohe_key = col
+
+            # --- OHE features ---
+            ohe_feats = ohe_map.get(ohe_key, [])
+
+            if not ohe_feats:
+                rows.append({
+                    "source": source_label,
+                    "original_column": col,
+                    "column_type": col_type,
+                    "dropped_null_analysis": False,
+                    "flagged_low_variation": is_flag_var,
+                    "dropped_low_variation": False,
+                    "binning_result": bin_result,
+                    "ohe_feature": "—",
+                    "flagged_suspicious_main": False,
+                    "dropped_suspicious_main": False,
+                    "finally_used_main": False,
+                    "flagged_suspicious_aug": False,
+                    "dropped_suspicious_aug": False,
+                    "finally_used_aug": False,
+                })
+            else:
+                for feat in ohe_feats:
+                    rows.append({
+                        "source": source_label,
+                        "original_column": col,
+                        "column_type": col_type,
+                        "dropped_null_analysis": False,
+                        "flagged_low_variation": is_flag_var,
+                        "dropped_low_variation": False,
+                        "binning_result": bin_result,
+                        "ohe_feature": feat,
+                        "flagged_suspicious_main": (
+                            feat in main_sus if include_in_main else False),
+                        "dropped_suspicious_main": (
+                            feat in main_drop if include_in_main else False),
+                        "finally_used_main": (
+                            feat in main_used if include_in_main else False),
+                        "flagged_suspicious_aug": feat in aug_sus,
+                        "dropped_suspicious_aug": feat in aug_drop,
+                        "finally_used_aug": feat in aug_used,
+                    })
+        return rows
+
+    trail_rows = _process_columns_for_trail(
+        "Main", COLUMNS_LIST, TARGET_COL,
+        null_drops, flagged, DROP_LOW_VARIATION,
+        original_cat_cols, original_num_cols,
+        bin_edges_store, binning_moved_to_cat, binning_dropped,
+        encode_cols, ohe,
+        main_result, aug_result if ext_df is not None else None,
+        include_in_main=True,
+    )
+
+    if EXT_COLUMNS and ext_df is not None:
+        trail_rows += _process_columns_for_trail(
+            "InsightGenie", EXT_COLUMNS, TARGET_COL,
+            ext_null_drops, ext_flagged, EXT_DROP_LOW_VARIATION,
+            ext_original_cat_cols, ext_original_num_cols,
+            ext_bin_edges_store, ext_binning_moved, ext_binning_dropped,
+            ext_encode_cols, ext_ohe,
+            main_result, aug_result,
+            include_in_main=False,
+        )
+
+    trail_df = pd.DataFrame(trail_rows)
+
+    # ── Append summary trail (running counts at each step) ─────
+    def _summary_for_source(label, tdf):
+        """Build summary rows showing column counts at each pipeline step."""
+        src = tdf[tdf["source"] == label]
+        if len(src) == 0:
+            return []
+        # Count unique original columns at each stage
+        total = src["original_column"].nunique()
+        null_dropped = src[src["dropped_null_analysis"]]["original_column"].nunique()
+        after_null = total - null_dropped
+        var_dropped = src[src["dropped_low_variation"]]["original_column"].nunique()
+        after_var = after_null - var_dropped
+        bin_dropped = src[src["binning_result"] == "dropped"]["original_column"].nunique()
+        after_bin = after_var - bin_dropped
+        # OHE features produced
+        ohe_produced = len(src[(src["ohe_feature"] != "—")])
+        # Post-training (main model)
+        used_main = len(src[src["finally_used_main"]])
+        dropped_main = len(src[src["dropped_suspicious_main"]])
+        # Post-training (augmented model)
+        used_aug = len(src[src["finally_used_aug"]])
+        dropped_aug = len(src[src["dropped_suspicious_aug"]])
+
+        summary = [
+            {"step": "1. Initial columns", "columns_dropped": "—",
+             "columns_remaining": str(total), "source": label},
+            {"step": "2. Null analysis (>40% null)", "columns_dropped": str(null_dropped),
+             "columns_remaining": str(after_null), "source": label},
+            {"step": "3. Low-variation drop (manual)", "columns_dropped": str(var_dropped),
+             "columns_remaining": str(after_var), "source": label},
+            {"step": "4. Binning failures dropped", "columns_dropped": str(bin_dropped),
+             "columns_remaining": str(after_bin), "source": label},
+            {"step": "5. After OHE (feature count)", "columns_dropped": "—",
+             "columns_remaining": str(ohe_produced), "source": label},
+            {"step": "6. Suspicious dropped (Main)", "columns_dropped": str(dropped_main),
+             "columns_remaining": str(used_main), "source": label},
+            {"step": "7. Suspicious dropped (Aug)", "columns_dropped": str(dropped_aug),
+             "columns_remaining": str(used_aug), "source": label},
+        ]
+        return summary
+
+    summary_rows = _summary_for_source("Main", trail_df)
+    if EXT_COLUMNS and ext_df is not None:
+        summary_rows += _summary_for_source("InsightGenie", trail_df)
+
+    summary_df = pd.DataFrame(summary_rows)
+
+    trail_path = os.path.join(ARTEFACT_DIR, "column_trail_report.csv")
+    summary_path = os.path.join(ARTEFACT_DIR, "column_trail_summary.csv")
+    trail_df.to_csv(trail_path, index=False)
+    summary_df.to_csv(summary_path, index=False)
+    print(f"  Column trail report: {trail_path}")
+    print(f"  Column trail summary: {summary_path}")
 
     # ── Console summary ───────────────────────────────────────────
     main_used = report_main[report_main["status"] == "USED"]
