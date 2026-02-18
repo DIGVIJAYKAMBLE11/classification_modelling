@@ -37,6 +37,7 @@ import numpy as np
 import joblib
 import json
 import os
+import time
 from pathlib import Path
 
 from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
@@ -617,14 +618,100 @@ def score_new_data(raw_df, artefact_dir, ext_raw_df=None,
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
+# ║                    PROGRESS TRACKER                              ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+class PipelineProgress:
+    """Lightweight progress bar + per-step timing tracker."""
+
+    STEPS = [
+        "Load data & holdout split",
+        "Column selection",
+        "Null analysis",
+        "Variation analysis",
+        "Identify column types",
+        "Binning",
+        "One-hot encoding",
+        "External columns pipeline",
+        "Save transformation artefacts",
+        "Train — Main model",
+        "Train — Augmented model",
+        "Build reports & trail CSV",
+    ]
+
+    BAR_WIDTH = 40  # characters for the progress bar
+
+    def __init__(self):
+        self.total = len(self.STEPS)
+        self.current = 0
+        self.step_times = {}
+        self._step_start = None
+        self._pipeline_start = time.time()
+
+    def start_step(self, step_idx):
+        """Begin a numbered pipeline step (0-based)."""
+        if self._step_start is not None and self.current < len(self.STEPS):
+            self.step_times[self.STEPS[self.current]] = time.time() - self._step_start
+        self.current = step_idx
+        self._step_start = time.time()
+        self._print_bar()
+
+    def _print_bar(self):
+        done = self.current
+        frac = done / self.total
+        filled = int(self.BAR_WIDTH * frac)
+        bar = "█" * filled + "░" * (self.BAR_WIDTH - filled)
+        elapsed = time.time() - self._pipeline_start
+        if done > 0:
+            eta = elapsed / done * (self.total - done)
+            eta_str = self._fmt_time(eta)
+        else:
+            eta_str = "—"
+        step_name = self.STEPS[self.current] if self.current < self.total else "Done"
+        print(f"\r  [{bar}] {done}/{self.total}  "
+              f"ETA {eta_str}  │ {step_name}", flush=True)
+
+    def finish(self):
+        """Mark all steps done and print final timing."""
+        if self._step_start is not None and self.current < len(self.STEPS):
+            self.step_times[self.STEPS[self.current]] = time.time() - self._step_start
+        self.current = self.total
+        self._print_bar()
+        total_elapsed = time.time() - self._pipeline_start
+        print(f"\n{'=' * 70}")
+        print(f"  PIPELINE COMPLETED in {self._fmt_time(total_elapsed)}")
+        print(f"{'=' * 70}")
+        print(f"  {'Step':<38s}  {'Time':>10s}  {'%':>6s}")
+        print(f"  {'─' * 38}  {'─' * 10}  {'─' * 6}")
+        for step_name, secs in self.step_times.items():
+            pct = secs / total_elapsed * 100 if total_elapsed > 0 else 0
+            print(f"  {step_name:<38s}  {self._fmt_time(secs):>10s}  {pct:5.1f}%")
+        print(f"  {'─' * 38}  {'─' * 10}  {'─' * 6}")
+        print(f"  {'TOTAL':<38s}  {self._fmt_time(total_elapsed):>10s}  100.0%")
+        return total_elapsed, self.step_times
+
+    @staticmethod
+    def _fmt_time(seconds):
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        m, s = divmod(seconds, 60)
+        if m < 60:
+            return f"{int(m)}m {s:.0f}s"
+        h, m = divmod(m, 60)
+        return f"{int(h)}h {int(m)}m {s:.0f}s"
+
+
+# ╔══════════════════════════════════════════════════════════════════╗
 # ║                      MAIN PIPELINE                              ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 def main():
+    progress = PipelineProgress()
     os.makedirs(ARTEFACT_DIR, exist_ok=True)
     print(f"Artefact directory: {ARTEFACT_DIR}")
 
     # ── 1. Load data ───────────────────────────────────────────────
+    progress.start_step(0)
     print("\n[1] Loading data ...")
     df_full = pd.read_csv(DATA_PATH)
     df_full.rename(columns=TARGET_RENAME, inplace=True)
@@ -644,6 +731,7 @@ def main():
     df_dev_full = df_dev.copy()
 
     # ── 2. Column selection (main columns) ─────────────────────────
+    progress.start_step(1)
     print("\n[2] Column selection (main columns) ...")
     df = df_dev.copy()
     if MODE == "drop":
@@ -654,6 +742,7 @@ def main():
     print(f"  Shape after selection: {df.shape}")
 
     # ── 3. Null analysis ───────────────────────────────────────────
+    progress.start_step(2)
     print("\n[3] Null analysis ...")
     feature_cols = [c for c in df.columns if c != TARGET_COL]
     null_drops = null_analysis(df, feature_cols, NULL_THRESHOLD_PCT, TARGET_COL)
@@ -661,6 +750,7 @@ def main():
     print(f"  Dropped {len(null_drops)} columns: {null_drops}")
 
     # ── 4. Variation analysis ──────────────────────────────────────
+    progress.start_step(3)
     print("\n[4] Variation analysis ...")
     feature_cols = [c for c in df.columns if c != TARGET_COL]
     flagged, var_scores = variation_analysis(df, feature_cols, TARGET_COL, VARIATION_THRESHOLD)
@@ -669,6 +759,7 @@ def main():
     print(f"  Dropped: {DROP_LOW_VARIATION}")
 
     # ── 5. Identify column types ───────────────────────────────────
+    progress.start_step(4)
     print("\n[5] Identifying column types ...")
     feature_cols = [c for c in df.columns if c != TARGET_COL]
     cat_cols, num_cols = identify_col_types(df, feature_cols, CAT_NUNIQUE_THRESHOLD, FORCE_NUMERIC)
@@ -681,6 +772,7 @@ def main():
             print(f"  Forced numeric (override): {forced}")
 
     # ── 6. Binning ─────────────────────────────────────────────────
+    progress.start_step(5)
     print("\n[6] Binning numerical columns ...")
     bin_edges_store = {}
     df, bin_edges_store, binning_moved_to_cat, binning_dropped = bin_columns(
@@ -696,6 +788,7 @@ def main():
         print(f"  Dropped (binning fallback): {binning_dropped}")
 
     # ── 7. OHE ─────────────────────────────────────────────────────
+    progress.start_step(6)
     print("\n[7] One-hot encoding ...")
     rare_mappings = {}
     df, encode_cols, ohe, rare_mappings = ohe_columns(df, TARGET_COL, DROP_FIRST, MAX_CATEGORIES, rare_mappings)
@@ -706,6 +799,7 @@ def main():
     df_main_only = df.copy()
 
     # ── 8. External columns pipeline ───────────────────────────────
+    progress.start_step(7)
     ext_bin_edges_store = {}
     ext_rare_mappings = {}
     ext_ohe = None
@@ -783,6 +877,7 @@ def main():
         print("\n[8] No external columns — skipping.")
 
     # ── 9. Save artefacts ──────────────────────────────────────────
+    progress.start_step(8)
     print("\n[9] Saving transformation artefacts ...")
     with open(os.path.join(ARTEFACT_DIR, "bin_edges.json"), "w") as f:
         json.dump(bin_edges_store, f, indent=2)
@@ -818,6 +913,7 @@ def main():
     #  PHASE A — MAIN DATA ONLY (before external augmentation)
     # ══════════════════════════════════════════════════════════════
     print("\n" + "=" * 60)
+    progress.start_step(9)
     print("  PHASE A: Training on MAIN DATA ONLY")
     print("=" * 60)
 
@@ -846,6 +942,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     if ext_df is not None:
         print("\n" + "=" * 60)
+        progress.start_step(10)
         print("  PHASE B: Training on MAIN + EXTERNAL DATA (augmented)")
         print("=" * 60)
 
@@ -881,6 +978,7 @@ def main():
         metrics = aug_result["metrics"]
         X_train = aug_result["X_train"]
     else:
+        progress.start_step(10)  # mark Phase B step even when skipped
         print("\n  No external data — skipping PHASE B.")
         # Use main-only results as the final model
         best_model = main_result["best_model"]
@@ -1060,6 +1158,7 @@ def main():
         json.dump(column_tracking, f, indent=2)
 
     # ── Predictor report (CSV for sharing) ────────────────────────
+    progress.start_step(11)
     def _build_report(result, label, encode_columns):
         """Build a per-OHE-feature report with importance, status & drop reason."""
         used_feats   = result["X_train"].columns.tolist()
@@ -1414,6 +1513,16 @@ def main():
     print(f"           xgb_gain | xgb_gain_rank | perm_importance_auc_drop |")
     print(f"           perm_importance_rank | drop_reason")
     print("  " + "=" * 100)
+
+    # ── Timing summary ─────────────────────────────────────────────
+    total_elapsed, step_times = progress.finish()
+    timing_info = {
+        "total_seconds": round(total_elapsed, 2),
+        "total_human": progress._fmt_time(total_elapsed),
+        "steps": {k: round(v, 2) for k, v in step_times.items()},
+    }
+    with open(os.path.join(ARTEFACT_DIR, "pipeline_timing.json"), "w") as f:
+        json.dump(timing_info, f, indent=2)
 
     print(f"\nAll artefacts saved to: {ARTEFACT_DIR}")
     print("Done.")

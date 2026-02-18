@@ -1006,5 +1006,274 @@ def main():
     print(f"Total slides: {len(prs.slides)}")
 
 
+INTERNAL_OUTPUT_PATH = "Internal_Pipeline_Guide.pptx"
+
+
+def create_internal_deck():
+    """Generate a separate PPT explaining the pipeline for the internal team."""
+    prs = Presentation()
+    prs.slide_width  = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+
+    # ── 1. Title ──────────────────────────────────────────────────
+    _title_slide(prs, "Classification Pipeline — Internal Guide",
+                 "Process, Functions, Parameters & Hyperparameters")
+
+    # ── 2. Pipeline Overview ──────────────────────────────────────
+    _content_slide(prs, "1. Pipeline Overview — End-to-End Flow", [
+        "**Step 1 — Load & Holdout Split:** Read raw CSV, create a 15% holdout set (never seen during training).",
+        "**Step 2 — Column Selection:** Keep only pre-approved COLUMNS_LIST features (MODE='keep').",
+        "**Step 3 — Null Analysis:** Drop columns where >40% of values are null (configurable via NULL_THRESHOLD_PCT).",
+        "**Step 4 — Variation Analysis:** Compute Cramer's-V between each feature and the target. "
+            "Flag low-variation columns; manually drop columns listed in DROP_LOW_VARIATION.",
+        "**Step 5 — Column Typing:** Auto-classify columns as categorical or numerical "
+            "(threshold: CAT_NUNIQUE_THRESHOLD). FORCE_NUMERIC overrides selected columns.",
+        "**Step 6 — Binning:** KBinsDiscretizer on numerical columns (quantile strategy by default). "
+            "Columns that fail binning fall back to categorical or are dropped.",
+        "**Step 7 — One-Hot Encoding (OHE):** All features converted to binary dummy columns. "
+            "Rare categories (<MAX_CATEGORIES) are collapsed to '__rare__'. Nulls become '__NULL__'.",
+        "**Step 8 — External (InsightGenie) Pipeline:** Same steps 3-7 applied to external columns, "
+            "then concatenated with main features.",
+        "**Step 9 — Save Artefacts:** Bin edges, OHE encoder, rare mappings, column metadata saved to artefacts/.",
+        "**Step 10 — Train Main Model:** XGBoost + GridSearchCV on main features only.",
+        "**Step 11 — Train Augmented Model:** XGBoost + GridSearchCV on main + InsightGenie features.",
+        "**Step 12 — Reports:** Predictor report, column trail CSV, timing, holdout evaluation.",
+    ])
+
+    # ── 3. Helper Functions ───────────────────────────────────────
+    _content_slide(prs, "2. Key Functions — What Each One Does", [
+        "**cramers_v(col, target):** Measures association between a categorical feature and the target "
+            "(chi-squared based). Used in variation analysis to flag weak predictors.",
+        "",
+        "**null_analysis(df, cols, threshold, target):** Returns list of columns where null % > threshold. "
+            "These are dropped to prevent sparse-data issues.",
+        "",
+        "**variation_analysis(df, cols, target, threshold):** Computes Cramer's-V for each column vs target. "
+            "Returns flagged columns (below threshold) and their scores. "
+            "Columns in DROP_LOW_VARIATION are actually removed.",
+        "",
+        "**identify_col_types(df, cols, cat_threshold, force_numeric):** "
+            "Categorical if nunique <= cat_threshold (default 20). "
+            "Columns in FORCE_NUMERIC are always treated as numerical.",
+        "",
+        "**bin_columns(df, num_cols, n_bins, strategy, custom_bins, ...):** "
+            "Discretizes numerical columns into n_bins bins (default 5, quantile strategy). "
+            "Creates col_bin column, drops original. Falls back to categorical or drops on failure.",
+        "",
+        "**ohe_columns(df, target, drop_first, max_categories, ...):** "
+            "Applies OneHotEncoder (sklearn). Rare categories collapsed first. "
+            "Returns encoded DataFrame + encoder object for deployment reuse.",
+    ])
+
+    # ── 4. train_and_evaluate ─────────────────────────────────────
+    _content_slide(prs, "3. Training Function — train_and_evaluate()", [
+        "**Purpose:** End-to-end training, feature selection, and evaluation in one call.",
+        "",
+        "**Flow:**",
+        "  1. Stratified train/test split (80/20 by default)",
+        "  2. XGBoost with GridSearchCV (5-fold stratified CV, scoring = roc_auc)",
+        "  3. Compute XGB gain importance + permutation importance (10 repeats)",
+        "  4. Auto-flag suspicious features: high gain but low perm importance "
+            "(may indicate data leakage or noise overfitting)",
+        "  5. Drop __NULL__ OHE features with negligible gain AND perm importance "
+            "(toggled by DROP_NULL_FEATURES)",
+        "  6. Retrain on cleaned feature set",
+        "  7. Evaluate: Accuracy, Balanced Accuracy, F1, AUC, Gini",
+        "",
+        "**Returns:** Model, train/test sets, metrics, params, feature drop audit trail, "
+            "importance Series (gain + perm).",
+    ])
+
+    # ── 5. User Configuration Parameters ──────────────────────────
+    param_rows = [
+        ["DATA_PATH", "Path to input CSV file", "str"],
+        ["TARGET_COL", "Name of the binary target column", "str"],
+        ["HOLDOUT_PCT", "Fraction of data reserved for true out-of-sample test", "0.15"],
+        ["NULL_THRESHOLD_PCT", "Max % nulls before a column is dropped", "40"],
+        ["VARIATION_THRESHOLD", "Cramer's-V below which columns are flagged", "0.02"],
+        ["DROP_LOW_VARIATION", "Manually confirmed list of columns to drop", "list"],
+        ["CAT_NUNIQUE_THRESHOLD", "Max unique values to classify as categorical", "20"],
+        ["FORCE_NUMERIC", "Columns forced to numerical despite low cardinality", "list"],
+        ["N_BINS", "Number of bins for KBinsDiscretizer", "5"],
+        ["BINNING_STRATEGY", "Binning strategy (quantile / uniform / kmeans)", "quantile"],
+        ["CUSTOM_BINS", "Per-column custom bin edges (dict)", "{}"],
+        ["BINNING_FALLBACK", "Behaviour on binning failure: 'categorical' or 'drop'", "categorical"],
+        ["DROP_FIRST", "Whether OHE drops the first category (avoids multicollinearity)", "False"],
+        ["MAX_CATEGORIES", "Minimum frequency to keep a category (else → __rare__)", "5"],
+        ["MODE", "Column selection mode: 'keep' (whitelist) or 'drop' (blacklist)", "keep"],
+        ["DROP_NULL_FEATURES", "Toggle: drop __NULL__ OHE features with negligible importance", "True"],
+    ]
+    _table_slide(prs,
+        "4. Configuration Parameters — Data & Preprocessing",
+        ["Parameter", "Description", "Default"],
+        param_rows,
+        col_widths=[Inches(3), Inches(7), Inches(2)],
+    )
+
+    # ── 6. Hyperparameters (GridSearchCV) ─────────────────────────
+    hp_rows = [
+        ["n_estimators", "Number of boosting rounds (trees)", "[100, 200, 300]"],
+        ["max_depth", "Max tree depth (controls complexity)", "[3, 5, 7]"],
+        ["learning_rate", "Step-size shrinkage per round", "[0.01, 0.05, 0.1]"],
+        ["subsample", "Fraction of rows used per tree", "[0.8, 1.0]"],
+        ["colsample_bytree", "Fraction of features used per tree", "[0.8, 1.0]"],
+        ["min_child_weight", "Min observations in a leaf node", "[1, 3, 5]"],
+        ["scale_pos_weight", "Auto-computed: neg / pos ratio (handles class imbalance)", "auto"],
+    ]
+    _table_slide(prs,
+        "5. XGBoost Hyperparameters — Grid Search Space",
+        ["Hyperparameter", "What it controls", "Search Grid"],
+        hp_rows,
+        col_widths=[Inches(3), Inches(5.5), Inches(3.5)],
+    )
+
+    # ── 7. Feature Importance & Auto-Flag ─────────────────────────
+    _content_slide(prs, "6. Feature Importance — How Suspicious Features Are Detected", [
+        "**Two independent importance measures are computed after training:**",
+        "",
+        "**1. XGBoost Gain Importance:**",
+        "  - Built-in: how much each feature contributes to reducing the loss function",
+        "  - Fast but can overweight high-cardinality or noisy features",
+        "",
+        "**2. Permutation Importance (AUC-based):**",
+        "  - Shuffle each feature 10 times, measure the AUC drop",
+        "  - Slower but more reliable; shows true predictive contribution",
+        "",
+        "**Auto-flag rule:**",
+        "  Feature is 'suspicious' if: gain >= top-50-percentile AND perm importance < 0.001",
+        "  (High gain but the model doesn't actually lose AUC when the feature is shuffled)",
+        "",
+        "**__NULL__ feature rule:**",
+        "  OHE features ending in '__NULL__' are dropped if BOTH gain < 0.001 AND perm < 0.0005.",
+        "  These represent 'the value was missing' indicators that add noise.",
+        "",
+        "**ADD_BACK_FEATURES:** Override list — features that should never be auto-dropped",
+        "**EXTRA_DROP_FEATURES:** Hard-coded additional drops (domain knowledge)",
+    ])
+
+    # ── 8. Deployment / Scoring Pipeline ──────────────────────────
+    _content_slide(prs, "7. Deployment — score_new_data() Function", [
+        "**Purpose:** Apply the exact same transformations to new data and produce predictions.",
+        "",
+        "**Artefacts loaded at scoring time:**",
+        "  - bin_edges.json — Binning boundaries (same buckets as training)",
+        "  - ohe_encoder.joblib — Fitted OneHotEncoder (same columns, same categories)",
+        "  - rare_mappings.json — Which categories map to '__rare__'",
+        "  - final_features.json — Exact list of features the model expects",
+        "  - xgb_model.joblib — Trained XGBoost model",
+        "",
+        "**Flow:**",
+        "  1. Read raw data, apply same null fills / rare mappings",
+        "  2. Apply saved bin edges (pd.cut with same boundaries)",
+        "  3. Apply saved OHE encoder (handle_unknown='ignore' for new categories)",
+        "  4. Align columns to final_features (add missing as 0, drop extra)",
+        "  5. Predict probabilities with saved model",
+        "",
+        "**Key guarantee:** Training and scoring transformations are identical — "
+            "no train/serve skew.",
+    ])
+
+    # ── 9. Artefact Directory ─────────────────────────────────────
+    artefact_rows = [
+        ["bin_edges.json", "Bin boundaries for numerical columns"],
+        ["ohe_encoder.joblib", "Fitted OneHotEncoder (sklearn)"],
+        ["rare_mappings.json", "Category → __rare__ mappings"],
+        ["column_metadata.json", "Cat/num classification, all column lists"],
+        ["column_tracking.json", "Full audit trail: which columns survived each step"],
+        ["xgb_model_main_only.joblib", "Trained XGBoost (main features only)"],
+        ["xgb_model.joblib", "Trained XGBoost (augmented: main + InsightGenie)"],
+        ["final_features_main_only.json", "Feature list for main-only model"],
+        ["final_features.json", "Feature list for augmented model"],
+        ["test_metrics_*.json", "Dev test metrics (AUC, Gini, F1, etc.)"],
+        ["predictor_report.csv", "Per-feature importance, status, drop reason"],
+        ["column_trail_report.csv", "Per-OHE-feature boolean trail through every step"],
+        ["column_trail_summary.csv", "Running counts at each pipeline step"],
+        ["pipeline_timing.json", "Elapsed time per step and total runtime"],
+        ["holdout_metrics_*.json", "Out-of-sample holdout metrics"],
+    ]
+    _table_slide(prs,
+        "8. Artefact Directory — What Gets Saved",
+        ["File", "Description"],
+        artefact_rows,
+        col_widths=[Inches(4.5), Inches(7.5)],
+    )
+
+    # ── 10. External / InsightGenie Pipeline ──────────────────────
+    _content_slide(prs, "9. InsightGenie (External) Features Pipeline", [
+        "**Separate but identical preprocessing** to main columns:",
+        "  - Own null threshold (EXT_NULL_THRESHOLD_PCT, default same as main)",
+        "  - Own variation threshold (EXT_VARIATION_THRESHOLD)",
+        "  - Own binning config (EXT_N_BINS, EXT_BINNING_STRATEGY, EXT_CUSTOM_BINS)",
+        "  - Own OHE encoder (separate from main OHE)",
+        "",
+        "**Why separate?**",
+        "  - External features may have different data quality / distributions",
+        "  - Separate OHE prevents category leakage between main and external",
+        "  - Allows tuning thresholds independently (stricter null threshold for external, etc.)",
+        "",
+        "**After preprocessing:**",
+        "  - External OHE features are concatenated with main OHE features",
+        "  - Both go into the AUGMENTED model together",
+        "  - The MAIN-ONLY model never sees external features (clean comparison)",
+        "",
+        "**Current external columns:** Defined in EXT_COLUMNS list (rating, photo_count, "
+            "industry_confidence, sentiment, trust_score, etc.)",
+    ])
+
+    # ── 11. Suggestions & Best Practices ──────────────────────────
+    _content_slide(prs, "10. Suggestions & Best Practices", [
+        "**For the team (development):**",
+        "  - Run the pipeline with HOLDOUT_PCT=0.15 to always have an unseen test set",
+        "  - Review column_trail_report.csv after every run to catch unexpected drops",
+        "  - Use FORCE_NUMERIC for ordinal-looking columns (e.g., scores that appear categorical)",
+        "  - Keep CUSTOM_BINS for domain-specific splits (e.g., age ranges, income brackets)",
+        "  - Tune VARIATION_THRESHOLD carefully — too aggressive drops useful features",
+        "",
+        "**For the client (presentation):**",
+        "  - Lead with AUC/Gini lift from augmentation (Main vs Augmented model)",
+        "  - Show the column trail summary to explain feature reduction transparency",
+        "  - Highlight permutation importance over gain (more interpretable for business)",
+        "  - Use holdout metrics to demonstrate generalization (no overfitting)",
+        "",
+        "**Production readiness checklist:**",
+        "  - Validate score_new_data() on holdout set matches holdout_metrics",
+        "  - Monitor prediction distribution drift monthly",
+        "  - Re-train quarterly or when AUC degrades > 0.02 on monitoring set",
+        "  - Version artefacts directory with each retrain (artefacts_v1, _v2, ...)",
+    ])
+
+    # ── 12. Quick Reference — Config Cheat Sheet ─────────────────
+    _content_slide(prs, "11. Quick Reference — What to Change When", [
+        "**'Model AUC is too low':**",
+        "  - Expand PARAM_GRID (add more n_estimators, try learning_rate=0.005)",
+        "  - Lower VARIATION_THRESHOLD to keep more features",
+        "  - Check if good columns are in DROP_LOW_VARIATION (remove them)",
+        "",
+        "**'Too many features / model is slow':**",
+        "  - Increase VARIATION_THRESHOLD to drop more weak features",
+        "  - Lower MAX_CATEGORIES to collapse more rare categories",
+        "  - Increase NULL_THRESHOLD_PCT to keep fewer sparse columns",
+        "",
+        "**'Augmented model is not helping':**",
+        "  - Check EXT_COLUMNS — remove noisy external features",
+        "  - Review predictor_report.csv for external features with 0 gain",
+        "  - Try stricter EXT_VARIATION_THRESHOLD",
+        "",
+        "**'__NULL__ features dominating importance':**",
+        "  - Ensure DROP_NULL_FEATURES=True",
+        "  - Lower NULL_GAIN_THRESHOLD / NULL_PERM_THRESHOLD",
+        "  - Investigate why so many nulls exist in the source data",
+    ])
+
+    # ── 13. Thank You ─────────────────────────────────────────────
+    _title_slide(prs, "Internal Pipeline Guide", "For questions, refer to artefacts/ or this deck")
+
+    # ── Save ──────────────────────────────────────────────────────
+    prs.save(INTERNAL_OUTPUT_PATH)
+    print(f"Internal guide saved to: {INTERNAL_OUTPUT_PATH}")
+    print(f"Total slides: {len(prs.slides)}")
+
+
 if __name__ == "__main__":
     main()
+    create_internal_deck()
