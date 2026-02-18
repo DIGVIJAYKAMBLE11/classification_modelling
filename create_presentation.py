@@ -757,21 +757,28 @@ def main():
         for src_label in trail_report_df["source"].unique():
             src = trail_report_df[trail_report_df["source"] == src_label].copy()
             # Collapse to one row per original column (show OHE count)
-            grouped = src.groupby("original_column", sort=False).agg(
-                column_type=("column_type", "first"),
-                dropped_null=("dropped_null_analysis", "first"),
-                flagged_var=("flagged_low_variation", "first"),
-                dropped_var=("dropped_low_variation", "first"),
-                binning_result=("binning_result", "first"),
-                ohe_count=("ohe_feature", lambda x: sum(1 for v in x if v != "—")),
-                used_main=("finally_used_main", "sum"),
-                used_aug=("finally_used_aug", "sum"),
-            ).reset_index()
+            # Check if __NULL__ drop columns exist
+            has_null_drop = "dropped_null_feature_main" in src.columns
+
+            agg_dict = {
+                "column_type": ("column_type", "first"),
+                "dropped_null": ("dropped_null_analysis", "first"),
+                "flagged_var": ("flagged_low_variation", "first"),
+                "dropped_var": ("dropped_low_variation", "first"),
+                "binning_result": ("binning_result", "first"),
+                "ohe_count": ("ohe_feature", lambda x: sum(1 for v in x if v != "—")),
+                "used_main": ("finally_used_main", "sum"),
+                "used_aug": ("finally_used_aug", "sum"),
+            }
+            if has_null_drop:
+                agg_dict["null_drop_main"] = ("dropped_null_feature_main", "sum")
+                agg_dict["null_drop_aug"] = ("dropped_null_feature_aug", "sum")
+            grouped = src.groupby("original_column", sort=False).agg(**agg_dict).reset_index()
 
             trail_rows = []
             for _, row in grouped.iterrows():
                 yn = lambda v: "Yes" if v else "No"
-                trail_rows.append([
+                base = [
                     row["original_column"],
                     str(row["column_type"]),
                     yn(row["dropped_null"]),
@@ -780,8 +787,26 @@ def main():
                     str(row["binning_result"]),
                     str(int(row["ohe_count"])),
                     str(int(row["used_main"])),
-                    str(int(row["used_aug"])),
-                ])
+                ]
+                if has_null_drop:
+                    base.append(str(int(row.get("null_drop_main", 0))))
+                base.append(str(int(row["used_aug"])))
+                if has_null_drop:
+                    base.append(str(int(row.get("null_drop_aug", 0))))
+                trail_rows.append(base)
+
+            headers = ["Column", "Type", "Null\nDrop", "Var\nFlag",
+                       "Var\nDrop", "Binning", "OHE\nCols", "Used\nMain"]
+            widths = [Inches(2.2), Inches(1.1), Inches(0.7), Inches(0.7),
+                      Inches(0.7), Inches(1.6), Inches(0.7), Inches(0.7)]
+            if has_null_drop:
+                headers.append("NULL\nMain")
+                widths.append(Inches(0.7))
+            headers.append("Used\nAug")
+            widths.append(Inches(0.7))
+            if has_null_drop:
+                headers.append("NULL\nAug")
+                widths.append(Inches(0.7))
 
             MAX_PER_SLIDE = 16
             num_slides = max(1, (len(trail_rows) + MAX_PER_SLIDE - 1) // MAX_PER_SLIDE)
@@ -792,13 +817,9 @@ def main():
                 suffix = f" (Page {slide_idx + 1}/{num_slides})" if num_slides > 1 else ""
                 _table_slide(prs,
                     f"12b. Column Trail — {src_label} Detail{suffix}",
-                    ["Column", "Type", "Null\nDrop", "Var\nFlag",
-                     "Var\nDrop", "Binning", "OHE\nCols",
-                     "Used\nMain", "Used\nAug"],
+                    headers,
                     chunk,
-                    col_widths=[Inches(2.6), Inches(1.2), Inches(0.8),
-                                Inches(0.8), Inches(0.8), Inches(2),
-                                Inches(0.8), Inches(0.8), Inches(0.8)],
+                    col_widths=widths,
                 )
 
     # ================================================================

@@ -260,6 +260,11 @@ PERM_MIN_THRESHOLD = 0.001
 ADD_BACK_FEATURES  = []
 EXTRA_DROP_FEATURES = []
 
+# ── __NULL__ feature handling ─────────────────────────────────────
+DROP_NULL_FEATURES      = True     # Toggle: drop __NULL__ OHE features with negligible importance
+NULL_GAIN_THRESHOLD     = 0.001   # Drop if XGB gain  < this  AND  perm importance < NULL_PERM_THRESHOLD
+NULL_PERM_THRESHOLD     = 0.0005  # Drop if perm importance < this  AND  gain < NULL_GAIN_THRESHOLD
+
 # ── Artefact directory ─────────────────────────────────────────────
 ARTEFACT_DIR = "artefacts"
 
@@ -416,7 +421,9 @@ def ohe_columns(dataframe, target_col, drop_first, max_categories, rare_map_stor
 
 def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scoring,
                        param_grid, gain_top_pct, perm_min_threshold,
-                       add_back_features, extra_drop_features, label=""):
+                       add_back_features, extra_drop_features, label="",
+                       drop_null_features=False, null_gain_thr=0.001,
+                       null_perm_thr=0.0005):
     """Train XGBoost with GridSearchCV, evaluate, and return results dict.
 
     Returns dict with keys: best_model, X_train, X_test, y_test, metrics,
@@ -467,7 +474,26 @@ def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scorin
     print(f"    Suspicious features: {suspicious}")
 
     auto_drop = [f for f in suspicious if f not in add_back_features]
-    final_drop = list(set(auto_drop + extra_drop_features))
+
+    # ── Drop __NULL__ OHE features with negligible importance ────
+    null_features_dropped = []
+    if drop_null_features:
+        null_feats = [f for f in imp.index if "__NULL__" in f]
+        null_low = [
+            f for f in null_feats
+            if imp[f] < null_gain_thr and perm_imp.get(f, 0) < null_perm_thr
+        ]
+        null_features_dropped = [f for f in null_low if f not in add_back_features]
+        if null_features_dropped:
+            print(f"    __NULL__ features dropped (low importance): "
+                  f"{len(null_features_dropped)} → {null_features_dropped}")
+        else:
+            print(f"    __NULL__ features checked: {len(null_feats)} found, "
+                  f"none below thresholds (gain<{null_gain_thr}, perm<{null_perm_thr})")
+    else:
+        print(f"    __NULL__ feature drop: DISABLED (DROP_NULL_FEATURES=False)")
+
+    final_drop = list(set(auto_drop + extra_drop_features + null_features_dropped))
     if final_drop:
         X_train = X_train.drop(columns=final_drop, errors="ignore")
         X_test  = X_test.drop(columns=final_drop, errors="ignore")
@@ -500,6 +526,7 @@ def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scorin
             "auto_flagged_suspicious": suspicious,
             "added_back": add_back_features,
             "extra_manual_drops": extra_drop_features,
+            "null_features_dropped": null_features_dropped,
             "final_dropped": final_drop,
         },
         "grid_search": grid_search,
@@ -798,6 +825,8 @@ def main():
         df_main_only, TARGET_COL, TEST_SIZE, RANDOM_STATE, CV_FOLDS, SCORING,
         PARAM_GRID, GAIN_TOP_PCT, PERM_MIN_THRESHOLD,
         ADD_BACK_FEATURES, EXTRA_DROP_FEATURES, label="MAIN ONLY",
+        drop_null_features=DROP_NULL_FEATURES,
+        null_gain_thr=NULL_GAIN_THRESHOLD, null_perm_thr=NULL_PERM_THRESHOLD,
     )
 
     # Save main-only artefacts
@@ -825,6 +854,8 @@ def main():
             df, TARGET_COL, TEST_SIZE, RANDOM_STATE, CV_FOLDS, SCORING,
             PARAM_GRID, GAIN_TOP_PCT, PERM_MIN_THRESHOLD,
             ADD_BACK_FEATURES, EXTRA_DROP_FEATURES, label="AUGMENTED",
+            drop_null_features=DROP_NULL_FEATURES,
+            null_gain_thr=NULL_GAIN_THRESHOLD, null_perm_thr=NULL_PERM_THRESHOLD,
         )
 
         # Save augmented artefacts
@@ -1142,12 +1173,14 @@ def main():
         main_used = set(main_result["X_train"].columns.tolist())
         main_sus = set(main_result["feature_drop_info"]["auto_flagged_suspicious"])
         main_drop = set(main_result["feature_drop_info"]["final_dropped"])
+        main_null_drop = set(main_result["feature_drop_info"].get("null_features_dropped", []))
 
-        aug_used, aug_sus, aug_drop = set(), set(), set()
+        aug_used, aug_sus, aug_drop, aug_null_drop = set(), set(), set(), set()
         if aug_result is not None:
             aug_used = set(aug_result["X_train"].columns.tolist())
             aug_sus = set(aug_result["feature_drop_info"]["auto_flagged_suspicious"])
             aug_drop = set(aug_result["feature_drop_info"]["final_dropped"])
+            aug_null_drop = set(aug_result["feature_drop_info"].get("null_features_dropped", []))
 
         ohe_map = _ohe_features_by_col(encoder, enc_cols)
 
@@ -1170,9 +1203,11 @@ def main():
                     "ohe_feature": "—",
                     "flagged_suspicious_main": False,
                     "dropped_suspicious_main": False,
+                    "dropped_null_feature_main": False,
                     "finally_used_main": False,
                     "flagged_suspicious_aug": False,
                     "dropped_suspicious_aug": False,
+                    "dropped_null_feature_aug": False,
                     "finally_used_aug": False,
                 })
                 continue
@@ -1202,9 +1237,11 @@ def main():
                         "ohe_feature": "—",
                         "flagged_suspicious_main": False,
                         "dropped_suspicious_main": False,
+                        "dropped_null_feature_main": False,
                         "finally_used_main": False,
                         "flagged_suspicious_aug": False,
                         "dropped_suspicious_aug": False,
+                        "dropped_null_feature_aug": False,
                         "finally_used_aug": False,
                     })
                     continue
@@ -1230,9 +1267,11 @@ def main():
                     "ohe_feature": "—",
                     "flagged_suspicious_main": False,
                     "dropped_suspicious_main": False,
+                    "dropped_null_feature_main": False,
                     "finally_used_main": False,
                     "flagged_suspicious_aug": False,
                     "dropped_suspicious_aug": False,
+                    "dropped_null_feature_aug": False,
                     "finally_used_aug": False,
                 })
             else:
@@ -1250,10 +1289,13 @@ def main():
                             feat in main_sus if include_in_main else False),
                         "dropped_suspicious_main": (
                             feat in main_drop if include_in_main else False),
+                        "dropped_null_feature_main": (
+                            feat in main_null_drop if include_in_main else False),
                         "finally_used_main": (
                             feat in main_used if include_in_main else False),
                         "flagged_suspicious_aug": feat in aug_sus,
                         "dropped_suspicious_aug": feat in aug_drop,
+                        "dropped_null_feature_aug": feat in aug_null_drop,
                         "finally_used_aug": feat in aug_used,
                     })
         return rows
@@ -1300,9 +1342,11 @@ def main():
         # Post-training (main model)
         used_main = len(src[src["finally_used_main"]])
         dropped_main = len(src[src["dropped_suspicious_main"]])
+        null_drop_main = len(src[src["dropped_null_feature_main"]])
         # Post-training (augmented model)
         used_aug = len(src[src["finally_used_aug"]])
         dropped_aug = len(src[src["dropped_suspicious_aug"]])
+        null_drop_aug = len(src[src["dropped_null_feature_aug"]])
 
         summary = [
             {"step": "1. Initial columns", "columns_dropped": "—",
@@ -1317,7 +1361,11 @@ def main():
              "columns_remaining": str(ohe_produced), "source": label},
             {"step": "6. Suspicious dropped (Main)", "columns_dropped": str(dropped_main),
              "columns_remaining": str(used_main), "source": label},
+            {"step": "6b. __NULL__ dropped (Main)", "columns_dropped": str(null_drop_main),
+             "columns_remaining": str(used_main), "source": label},
             {"step": "7. Suspicious dropped (Aug)", "columns_dropped": str(dropped_aug),
+             "columns_remaining": str(used_aug), "source": label},
+            {"step": "7b. __NULL__ dropped (Aug)", "columns_dropped": str(null_drop_aug),
              "columns_remaining": str(used_aug), "source": label},
         ]
         return summary
