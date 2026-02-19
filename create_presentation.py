@@ -584,40 +584,53 @@ def main():
     )
 
     # ================================================================
-    # SLIDE 10: Performance Comparison (4 columns)
+    # SLIDE 10: Performance Comparison (with holdout lift)
     # ================================================================
     if has_data:
         comp_rows = []
         for metric_name in ["Accuracy", "Balanced Accuracy", "F1 Score", "AUC (ROC)", "Gini"]:
+            h_main = hold_metrics_main.get(metric_name)
+            h_aug  = hold_metrics_aug.get(metric_name, h_main)
+            if h_main and h_aug:
+                lift_val = h_aug - h_main
+                lift_str = f"{'+' if lift_val >= 0 else ''}{lift_val:.4f}"
+            else:
+                lift_str = "—"
             comp_rows.append([
                 metric_name,
-                fmt(test_metrics_main.get(metric_name)),
-                fmt(test_metrics_aug.get(metric_name, test_metrics_main.get(metric_name))),
                 fmt(hold_metrics_main.get(metric_name)),
                 fmt(hold_metrics_aug.get(metric_name, hold_metrics_main.get(metric_name))),
+                lift_str,
             ])
+        # KS
+        ks_h_main = ks_stats.get("Hold_Main_KS")
+        ks_h_aug  = ks_stats.get("Hold_Aug_KS")
+        if ks_h_main and ks_h_aug:
+            ks_lift = ks_h_aug - ks_h_main
+            ks_lift_str = f"{'+' if ks_lift >= 0 else ''}{ks_lift:.4f}"
+        else:
+            ks_lift_str = "—"
         comp_rows.append([
             "KS Statistic",
-            fmt(ks_stats.get("Dev_Main_KS")),
-            fmt(ks_stats.get("Dev_Aug_KS")),
             fmt(ks_stats.get("Hold_Main_KS")),
             fmt(ks_stats.get("Hold_Aug_KS")),
+            ks_lift_str,
         ])
     else:
         comp_rows = [
-            ["Accuracy", "—", "—", "—", "—"],
-            ["Balanced Accuracy", "—", "—", "—", "—"],
-            ["F1 Score", "—", "—", "—", "—"],
-            ["AUC (ROC)", "—", "—", "—", "—"],
-            ["Gini", "—", "—", "—", "—"],
-            ["KS Statistic", "—", "—", "—", "—"],
+            ["Accuracy", "—", "—", "—"],
+            ["Balanced Accuracy", "—", "—", "—"],
+            ["F1 Score", "—", "—", "—"],
+            ["AUC (ROC)", "—", "—", "—"],
+            ["Gini", "—", "—", "—"],
+            ["KS Statistic", "—", "—", "—"],
         ]
 
     _table_slide(prs,
-        "8. Performance Comparison — Main vs Augmented, Dev vs Holdout",
-        ["Metric", "Dev Main", "Dev Augmented", "Holdout Main", "Holdout Augmented"],
+        "8. Holdout Performance — Main vs Augmented (Lift from InsightGenie)",
+        ["Metric", "Holdout Main", "Holdout Augmented", "Lift (Aug - Main)"],
         comp_rows,
-        col_widths=[Inches(3), Inches(2.3), Inches(2.3), Inches(2.3), Inches(2.3)],
+        col_widths=[Inches(3), Inches(3), Inches(3), Inches(3)],
     )
 
     # ================================================================
@@ -1005,53 +1018,60 @@ def main():
         _content_slide(prs, "13b. Features — Augmented Model", aug_feat_bullets)
 
     # ================================================================
-    # SLIDE 17: Key Findings & Recommendations
+    # SLIDE 17: Key Findings — Holdout Lift (all metrics)
     # ================================================================
     findings = [
-        "**Baseline Model (Main Data Only):**",
+        "**Holdout Performance — Baseline (Main Data Only):**",
     ]
-    if test_metrics_main:
-        findings.append(
-            f"  AUC = {fmt(test_metrics_main.get('AUC (ROC)'))}, "
-            f"Gini = {fmt(test_metrics_main.get('Gini'))}, "
-            f"KS = {fmt(ks_stats.get('Dev_Main_KS'))}"
-        )
-    else:
-        findings.append("  (Metrics pending)")
-
-    findings.extend(["", "**Augmented Model (Main + InsightGenie Data):**"])
-    if test_metrics_aug:
-        findings.append(
-            f"  AUC = {fmt(test_metrics_aug.get('AUC (ROC)'))}, "
-            f"Gini = {fmt(test_metrics_aug.get('Gini'))}, "
-            f"KS = {fmt(ks_stats.get('Dev_Aug_KS'))}"
-        )
-        # Compute lift
-        main_auc = test_metrics_main.get("AUC (ROC)", 0)
-        aug_auc = test_metrics_aug.get("AUC (ROC)", 0)
-        if main_auc and aug_auc:
-            lift = aug_auc - main_auc
-            findings.append(
-                f"  AUC Lift from augmentation: {'+' if lift >= 0 else ''}{lift:.4f}"
-            )
-    else:
-        findings.append("  (Metrics pending)")
-
-    findings.extend([
-        "",
-        "**Holdout Validation:**",
-    ])
     if hold_metrics_main:
-        hold_main_auc = hold_metrics_main.get("AUC (ROC)", 0)
-        dev_main_auc = test_metrics_main.get("AUC (ROC)", 0)
-        if hold_main_auc and dev_main_auc:
-            diff = hold_main_auc - dev_main_auc
+        findings.append(
+            f"  AUC = {fmt(hold_metrics_main.get('AUC (ROC)'))}, "
+            f"Gini = {fmt(hold_metrics_main.get('Gini'))}, "
+            f"KS = {fmt(ks_stats.get('Hold_Main_KS'))}"
+        )
+    elif test_metrics_main:
+        findings.append(
+            f"  (Holdout pending) Dev AUC = {fmt(test_metrics_main.get('AUC (ROC)'))}"
+        )
+    else:
+        findings.append("  (Metrics pending)")
+
+    findings.extend(["", "**Holdout Performance — Augmented (Main + InsightGenie):**"])
+    if hold_metrics_aug:
+        findings.append(
+            f"  AUC = {fmt(hold_metrics_aug.get('AUC (ROC)'))}, "
+            f"Gini = {fmt(hold_metrics_aug.get('Gini'))}, "
+            f"KS = {fmt(ks_stats.get('Hold_Aug_KS'))}"
+        )
+    elif test_metrics_aug:
+        findings.append(
+            f"  (Holdout pending) Dev AUC = {fmt(test_metrics_aug.get('AUC (ROC)'))}"
+        )
+    else:
+        findings.append("  (Metrics pending)")
+
+    # Compute lift on HOLDOUT for ALL metrics
+    findings.extend(["", "**Holdout Lift (Augmented - Main) across all metrics:**"])
+    if hold_metrics_main and hold_metrics_aug:
+        lift_metrics = ["Accuracy", "Balanced Accuracy", "F1 Score", "AUC (ROC)", "Gini"]
+        for m in lift_metrics:
+            h_main = hold_metrics_main.get(m, 0)
+            h_aug = hold_metrics_aug.get(m, 0)
+            if h_main and h_aug:
+                lift = h_aug - h_main
+                findings.append(
+                    f"  {m:<20s}  {'+' if lift >= 0 else ''}{lift:.4f}"
+                )
+        # KS lift
+        ks_hm = ks_stats.get("Hold_Main_KS", 0)
+        ks_ha = ks_stats.get("Hold_Aug_KS", 0)
+        if ks_hm and ks_ha:
+            ks_lift = ks_ha - ks_hm
             findings.append(
-                f"  Main model: Dev AUC {fmt(dev_main_auc)} vs Holdout AUC {fmt(hold_main_auc)} "
-                f"(diff: {'+' if diff >= 0 else ''}{diff:.4f})"
+                f"  {'KS Statistic':<20s}  {'+' if ks_lift >= 0 else ''}{ks_lift:.4f}"
             )
     else:
-        findings.append("  (Pending)")
+        findings.append("  (Holdout metrics pending — will be populated after training)")
 
     findings.extend([
         "",
@@ -1061,7 +1081,7 @@ def main():
         "  - Consider feature engineering on top-contributing InsightGenie features",
     ])
 
-    _content_slide(prs, "14. Key Findings & Recommendations", findings)
+    _content_slide(prs, "14. Key Findings & Recommendations (Holdout-Based)", findings)
 
     # ================================================================
     # SLIDE 18: Thank You / Q&A
