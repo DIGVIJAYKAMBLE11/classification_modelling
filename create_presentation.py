@@ -277,6 +277,74 @@ def _table_slide(prs, title, headers, rows, col_widths=None):
     return slide
 
 
+CODE_BG    = RGBColor(0x1E, 0x1E, 0x2E)  # dark background for code
+CODE_FG    = RGBColor(0xCD, 0xD6, 0xF4)  # light text
+CODE_TITLE = RGBColor(0xA6, 0xE3, 0xA1)  # green for title accent
+
+
+def _code_slide(prs, title, code_text, note=""):
+    """Slide with a monospace code block on a dark background."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_shape_bg(slide, CODE_BG)
+
+    # Top bar
+    bar = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(13.333), Inches(0.8))
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = RGBColor(0x11, 0x11, 0x1B)
+    bar.line.fill.background()
+
+    # Title
+    txBox = slide.shapes.add_textbox(Inches(0.6), Inches(0.12), Inches(12), Inches(0.55))
+    tf = txBox.text_frame
+    p = tf.paragraphs[0]
+    run = p.add_run()
+    run.text = title
+    run.font.size = Pt(20)
+    run.font.bold = True
+    run.font.color.rgb = CODE_TITLE
+
+    # Code block background
+    code_box_bg = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, Inches(0.4), Inches(1.0),
+        Inches(12.5), Inches(5.6))
+    code_box_bg.fill.solid()
+    code_box_bg.fill.fore_color.rgb = RGBColor(0x16, 0x16, 0x25)
+    code_box_bg.line.color.rgb = RGBColor(0x31, 0x31, 0x44)
+    code_box_bg.line.width = Pt(1)
+
+    # Code text
+    code_tb = slide.shapes.add_textbox(Inches(0.7), Inches(1.15), Inches(12), Inches(5.4))
+    tf2 = code_tb.text_frame
+    tf2.word_wrap = True
+
+    lines = code_text.strip().split("\n")
+    for i, line in enumerate(lines):
+        if i == 0:
+            p2 = tf2.paragraphs[0]
+        else:
+            p2 = tf2.add_paragraph()
+        p2.text = line
+        p2.font.size = Pt(11)
+        p2.font.name = "Consolas"
+        p2.font.color.rgb = CODE_FG
+        p2.space_before = Pt(1)
+        p2.space_after = Pt(1)
+
+    # Optional note
+    if note:
+        note_tb = slide.shapes.add_textbox(Inches(0.6), Inches(6.7), Inches(12), Inches(0.6))
+        tf3 = note_tb.text_frame
+        tf3.word_wrap = True
+        p3 = tf3.paragraphs[0]
+        p3.text = note
+        p3.font.size = Pt(12)
+        p3.font.italic = True
+        p3.font.color.rgb = RGBColor(0x94, 0x9C, 0xBB)
+
+    return slide
+
+
 def main():
     prs = Presentation()
     prs.slide_width = Inches(13.333)
@@ -1017,7 +1085,7 @@ def create_internal_deck():
 
     # ── 1. Title ──────────────────────────────────────────────────
     _title_slide(prs, "Classification Pipeline — Internal Guide",
-                 "Process, Functions, Parameters & Hyperparameters")
+                 "Process, Functions, Parameters, Hyperparameters & Code")
 
     # ── 2. Pipeline Overview ──────────────────────────────────────
     _content_slide(prs, "1. Pipeline Overview — End-to-End Flow", [
@@ -1040,7 +1108,70 @@ def create_internal_deck():
         "**Step 12 — Reports:** Predictor report, column trail CSV, timing, holdout evaluation.",
     ])
 
-    # ── 3. Helper Functions ───────────────────────────────────────
+    # ── Pipeline main() code ──────────────────────────────────────
+    _code_slide(prs, "Code: Pipeline main() — Steps 1-4", """\
+def main():
+    progress = PipelineProgress()
+    os.makedirs(ARTEFACT_DIR, exist_ok=True)
+
+    # ── 1. Load data ──────────────────────────────────────────
+    progress.start_step(0)
+    df_full = pd.read_csv(DATA_PATH)
+    df_full.rename(columns=TARGET_RENAME, inplace=True)
+
+    # Holdout split (15% true out-of-sample, never used during training)
+    holdout_raw, df_dev_full = train_test_split(
+        df_full, test_size=(1 - HOLDOUT_PCT), random_state=HOLDOUT_SEED,
+        stratify=df_full[TARGET_COL])
+
+    # ── 2. Column selection ───────────────────────────────────
+    progress.start_step(1)
+    if MODE == "keep":
+        keep = list(set(COLUMNS_LIST + [TARGET_COL]))
+        df = df[[c for c in keep if c in df.columns]]
+
+    # ── 3. Null analysis ──────────────────────────────────────
+    progress.start_step(2)
+    null_drops = null_analysis(df, feature_cols, NULL_THRESHOLD_PCT, TARGET_COL)
+    df.drop(columns=null_drops, inplace=True)
+
+    # ── 4. Variation analysis ─────────────────────────────────
+    progress.start_step(3)
+    flagged, var_scores = variation_analysis(df, feature_cols, TARGET_COL, VARIATION_THRESHOLD)
+    df.drop(columns=[c for c in DROP_LOW_VARIATION if c in df.columns], inplace=True)""",
+        note="File: train_pipeline.py — main() function (simplified for readability)")
+
+    _code_slide(prs, "Code: Pipeline main() — Steps 5-8", """\
+    # ── 5. Identify column types ──────────────────────────────
+    progress.start_step(4)
+    cat_cols, num_cols = identify_col_types(df, feature_cols, CAT_NUNIQUE_THRESHOLD, FORCE_NUMERIC)
+
+    # ── 6. Binning ────────────────────────────────────────────
+    progress.start_step(5)
+    df, bin_edges_store, binning_moved_to_cat, binning_dropped = bin_columns(
+        df, num_cols, N_BINS, BINNING_STRATEGY, CUSTOM_BINS, bin_edges_store,
+        fallback=BINNING_FALLBACK)
+
+    # ── 7. OHE ────────────────────────────────────────────────
+    progress.start_step(6)
+    df, encode_cols, ohe, rare_mappings = ohe_columns(
+        df, TARGET_COL, DROP_FIRST, MAX_CATEGORIES, rare_mappings)
+
+    # ── 8. External columns pipeline ──────────────────────────
+    progress.start_step(7)
+    if EXT_COLUMNS and len(EXT_COLUMNS) > 0:
+        ext_df = df_dev_full[available_ext + [TARGET_COL]].copy()
+        # Same steps: null → variation → types → binning → OHE
+        ext_null_drops = null_analysis(ext_df, ext_feature_cols, EXT_NULL_THRESHOLD_PCT, TARGET_COL)
+        ext_flagged, _ = variation_analysis(ext_df, ext_feature_cols, TARGET_COL, EXT_VARIATION_THRESHOLD)
+        ext_cat_cols, ext_num_cols = identify_col_types(ext_df, ...)
+        ext_df, ext_bin_edges_store, ext_binning_moved, ext_binning_dropped = bin_columns(...)
+        ext_df, ext_encode_cols, ext_ohe, ext_rare_mappings = ohe_columns(...)
+        # Concatenate with main
+        df = pd.concat([df.drop(columns=[TARGET_COL]), ext_only, df[[TARGET_COL]]], axis=1)""",
+        note="File: train_pipeline.py — main() function (simplified for readability)")
+
+    # ── 3. Helper Functions ───────────────────────────────────
     _content_slide(prs, "2. Key Functions — What Each One Does", [
         "**cramers_v(col, target):** Measures association between a categorical feature and the target "
             "(chi-squared based). Used in variation analysis to flag weak predictors.",
@@ -1065,7 +1196,116 @@ def create_internal_deck():
             "Returns encoded DataFrame + encoder object for deployment reuse.",
     ])
 
-    # ── 4. train_and_evaluate ─────────────────────────────────────
+    # ── Code: cramers_v + null_analysis ───────────────────────
+    _code_slide(prs, "Code: cramers_v() + null_analysis()", """\
+def cramers_v(col, target):
+    \"\"\"Cramer's V statistic — measures association between two categorical variables.\"\"\"
+    ct = pd.crosstab(col, target)
+    chi2 = chi2_contingency(ct)[0]
+    n = ct.sum().sum()
+    r, k = ct.shape
+    return np.sqrt(chi2 / (n * (min(r, k) - 1))) if min(r, k) > 1 else 0
+
+
+def null_analysis(dataframe, columns, threshold_pct, target_col):
+    \"\"\"Return columns where null percentage exceeds threshold.\"\"\"
+    null_pct = (dataframe[columns].isnull().sum() / len(dataframe) * 100)
+    null_pct = null_pct.sort_values(ascending=False)
+    cols_to_drop = null_pct[null_pct > threshold_pct].index.tolist()
+    if target_col in cols_to_drop:
+        cols_to_drop.remove(target_col)
+    return cols_to_drop""",
+        note="cramers_v: higher = stronger association.  null_analysis: returns list of column names to drop.")
+
+    # ── Code: variation_analysis ──────────────────────────────
+    _code_slide(prs, "Code: variation_analysis()", """\
+def variation_analysis(dataframe, columns, target_col, threshold):
+    \"\"\"Score each feature's predictive variation vs the target.
+    Categorical: Cramer's V.   Numerical: KS statistic between classes.\"\"\"
+    scores = {}
+    for col in columns:
+        if dataframe[col].nunique() < 2:
+            scores[col] = 0.0
+            continue
+        if not pd.api.types.is_numeric_dtype(dataframe[col]) or dataframe[col].nunique() <= 10:
+            scores[col] = cramers_v(dataframe[col].fillna("__NULL__"), dataframe[target_col])
+        else:
+            classes = dataframe[target_col].unique()
+            grp0 = dataframe.loc[dataframe[target_col] == classes[0], col].dropna()
+            grp1 = dataframe.loc[dataframe[target_col] == classes[1], col].dropna()
+            scores[col] = ks_2samp(grp0, grp1)[0] if len(grp0) > 0 and len(grp1) > 0 else 0.0
+    flagged = [c for c, v in scores.items() if v < threshold]
+    return flagged, scores""",
+        note="Flagged columns have score < VARIATION_THRESHOLD. Only DROP_LOW_VARIATION columns are actually removed.")
+
+    # ── Code: identify_col_types ──────────────────────────────
+    _code_slide(prs, "Code: identify_col_types() + bin_columns()", """\
+def identify_col_types(dataframe, feature_cols, nunique_threshold=10, force_numeric=None):
+    \"\"\"Classify columns as categorical or numerical.\"\"\"
+    force_numeric = set(force_numeric or [])
+    cat = [c for c in feature_cols
+           if c not in force_numeric
+           and (not pd.api.types.is_numeric_dtype(dataframe[c])
+                or dataframe[c].nunique() <= nunique_threshold)]
+    num = [c for c in feature_cols if c not in cat]
+    return cat, num
+
+
+def bin_columns(dataframe, num_cols, n_bins, strategy, custom_bins, bin_store,
+                fallback="categorical"):
+    \"\"\"Bin numerical columns. Falls back to categorical or drops on failure.\"\"\"
+    moved_to_cat = []
+    dropped = []
+    successfully_binned = []
+    for col in num_cols:
+        try:
+            if col in custom_bins:
+                edges = custom_bins[col]
+                dataframe[col + "_bin"] = pd.cut(dataframe[col], bins=edges, ...)
+            else:
+                binner = KBinsDiscretizer(n_bins=n_bins, encode="ordinal", strategy=strategy)
+                dataframe.loc[valid_mask, col + "_bin"] = binner.fit_transform(...)
+            successfully_binned.append(col)
+        except Exception:
+            if fallback == "categorical": moved_to_cat.append(col)
+            else: dropped.append(col)
+    dataframe.drop(columns=successfully_binned, inplace=True)   # drop originals, keep _bin
+    return dataframe, bin_store, moved_to_cat, dropped""",
+        note="After binning: original 'col' dropped, 'col_bin' kept. Failed cols go to categorical or are dropped.")
+
+    # ── Code: ohe_columns ─────────────────────────────────────
+    _code_slide(prs, "Code: ohe_columns()", """\
+def ohe_columns(dataframe, target_col, drop_first, max_categories, rare_map_store):
+    \"\"\"One-hot encode all feature columns. Collapse rare categories first.\"\"\"
+    encode_cols = [c for c in dataframe.columns if c != target_col]
+
+    # Collapse rare categories → '__rare__'
+    if max_categories is not None:
+        for col in encode_cols:
+            counts = dataframe[col].value_counts()
+            rare_cats = counts[counts < max_categories].index.tolist()
+            if rare_cats:
+                dataframe[col] = dataframe[col].apply(
+                    lambda x: "__rare__" if x in rare_cats else x)
+                rare_map_store[col] = rare_cats
+
+    # Fill nulls → '__NULL__'
+    for col in encode_cols:
+        if dataframe[col].isnull().any():
+            dataframe[col] = dataframe[col].fillna("__NULL__")
+    dataframe[encode_cols] = dataframe[encode_cols].astype(str)
+
+    # Fit & transform
+    ohe = OneHotEncoder(sparse_output=False, handle_unknown="ignore",
+                        drop="first" if drop_first else None)
+    encoded = ohe.fit_transform(dataframe[encode_cols])
+    encoded_df = pd.DataFrame(encoded, columns=ohe.get_feature_names_out(encode_cols),
+                              index=dataframe.index)
+    result = pd.concat([encoded_df, dataframe[[target_col]]], axis=1)
+    return result, encode_cols, ohe, rare_map_store""",
+        note="Produces binary columns like 'genero_M', 'platam_score_bin_3.0'. Encoder saved for deployment reuse.")
+
+    # ── 4. train_and_evaluate ─────────────────────────────────
     _content_slide(prs, "3. Training Function — train_and_evaluate()", [
         "**Purpose:** End-to-end training, feature selection, and evaluation in one call.",
         "",
@@ -1084,7 +1324,101 @@ def create_internal_deck():
             "importance Series (gain + perm).",
     ])
 
-    # ── 5. User Configuration Parameters ──────────────────────────
+    # ── Code: train_and_evaluate — signature + GridSearchCV ───
+    _code_slide(prs, "Code: train_and_evaluate() — Signature & GridSearchCV", """\
+def train_and_evaluate(df, target_col, test_size, random_state, cv_folds, scoring,
+                       param_grid, gain_top_pct, perm_min_threshold,
+                       add_back_features, extra_drop_features, label="",
+                       drop_null_features=False, null_gain_thr=0.001,
+                       null_perm_thr=0.0005):
+    \"\"\"Train XGBoost with GridSearchCV, evaluate, and return results dict.\"\"\"
+
+    # Stratified train / test split
+    X = df.drop(columns=[target_col])
+    y = df[target_col]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y)
+
+    # XGBoost with auto class-imbalance handling
+    neg, pos = np.bincount(y_train.astype(int))
+    scale_pos_weight = neg / pos if pos > 0 else 1
+
+    xgb_base = XGBClassifier(
+        scale_pos_weight=scale_pos_weight, use_label_encoder=False,
+        eval_metric="logloss", random_state=random_state, verbosity=0)
+
+    skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    grid_search = GridSearchCV(
+        estimator=xgb_base, param_grid=param_grid, scoring=scoring,
+        cv=skf, n_jobs=-1, verbose=1, refit=True)
+    grid_search.fit(X_train, y_train)
+    best_model = grid_search.best_estimator_""",
+        note="scale_pos_weight auto-handles class imbalance. GridSearchCV tries all param combinations with 5-fold CV.")
+
+    # ── Code: train_and_evaluate — importance & auto-flag ─────
+    _code_slide(prs, "Code: train_and_evaluate() — Feature Importance & Auto-Flag", """\
+    # Feature importance & auto-flag
+    imp = pd.Series(best_model.feature_importances_, index=X_train.columns)    # XGB gain
+    perm_result = permutation_importance(
+        best_model, X_test, y_test, n_repeats=10,
+        random_state=random_state, scoring="roc_auc", n_jobs=-1)
+    perm_imp = pd.Series(perm_result.importances_mean, index=X_test.columns)   # perm importance
+
+    # Suspicious: high gain but low permutation importance
+    gain_cutoff = np.percentile(imp.values, 100 - gain_top_pct)   # top 50% by default
+    suspicious = imp.index[(imp >= gain_cutoff) & (perm_imp < perm_min_threshold)].tolist()
+
+    auto_drop = [f for f in suspicious if f not in add_back_features]
+
+    # Drop __NULL__ OHE features with negligible importance
+    null_features_dropped = []
+    if drop_null_features:
+        null_feats = [f for f in imp.index if "__NULL__" in f]
+        null_low = [f for f in null_feats
+                    if imp[f] < null_gain_thr and perm_imp.get(f, 0) < null_perm_thr]
+        null_features_dropped = [f for f in null_low if f not in add_back_features]
+
+    final_drop = list(set(auto_drop + extra_drop_features + null_features_dropped))
+    if final_drop:
+        X_train = X_train.drop(columns=final_drop, errors="ignore")
+        X_test  = X_test.drop(columns=final_drop, errors="ignore")
+        best_model.fit(X_train, y_train)    # retrain on cleaned feature set""",
+        note="Two-pass approach: train → measure importance → prune → retrain. Ensures clean final model.")
+
+    # ── Code: train_and_evaluate — evaluation ─────────────────
+    _code_slide(prs, "Code: train_and_evaluate() — Evaluation Metrics & Return", """\
+    # Evaluation metrics
+    y_pred = best_model.predict(X_test)
+    y_prob = best_model.predict_proba(X_test)[:, 1]
+    metrics = {
+        "Accuracy":          accuracy_score(y_test, y_pred),
+        "Balanced Accuracy": balanced_accuracy_score(y_test, y_pred),
+        "F1 Score":          f1_score(y_test, y_pred),
+        "AUC (ROC)":         roc_auc_score(y_test, y_prob),
+        "Gini":              2 * roc_auc_score(y_test, y_prob) - 1,
+    }
+
+    return {
+        "best_model": best_model,
+        "X_train": X_train,  "X_test": X_test,  "y_test": y_test,
+        "metrics": metrics,
+        "best_params": grid_search.best_params_,
+        "feature_drop_info": {
+            "auto_flagged_suspicious": suspicious,
+            "added_back": add_back_features,
+            "extra_manual_drops": extra_drop_features,
+            "null_features_dropped": null_features_dropped,
+            "final_dropped": final_drop,
+        },
+        "grid_search": grid_search,
+        "xgb_gain": imp,
+        "perm_importance": perm_imp,
+        "gain_cutoff": gain_cutoff,
+        "perm_min_threshold": perm_min_threshold,
+    }""",
+        note="Gini = 2*AUC - 1. feature_drop_info provides full audit trail of every drop decision.")
+
+    # ── 5. User Configuration Parameters ──────────────────────
     param_rows = [
         ["DATA_PATH", "Path to input CSV file", "str"],
         ["TARGET_COL", "Name of the binary target column", "str"],
@@ -1099,7 +1433,7 @@ def create_internal_deck():
         ["CUSTOM_BINS", "Per-column custom bin edges (dict)", "{}"],
         ["BINNING_FALLBACK", "Behaviour on binning failure: 'categorical' or 'drop'", "categorical"],
         ["DROP_FIRST", "Whether OHE drops the first category (avoids multicollinearity)", "False"],
-        ["MAX_CATEGORIES", "Minimum frequency to keep a category (else → __rare__)", "5"],
+        ["MAX_CATEGORIES", "Minimum frequency to keep a category (else -> __rare__)", "5"],
         ["MODE", "Column selection mode: 'keep' (whitelist) or 'drop' (blacklist)", "keep"],
         ["DROP_NULL_FEATURES", "Toggle: drop __NULL__ OHE features with negligible importance", "True"],
     ]
@@ -1110,7 +1444,40 @@ def create_internal_deck():
         col_widths=[Inches(3), Inches(7), Inches(2)],
     )
 
-    # ── 6. Hyperparameters (GridSearchCV) ─────────────────────────
+    # ── Code: Configuration block ─────────────────────────────
+    _code_slide(prs, "Code: User Configuration Block", """\
+# ── Data ──────────────────────────────────────────────────────
+DATA_PATH   = "data/all_data.csv"
+TARGET_COL  = "y"
+HOLDOUT_PCT = 0.15
+
+# ── Null / Variation thresholds ───────────────────────────────
+NULL_THRESHOLD_PCT  = 40
+VARIATION_THRESHOLD = 0.02
+DROP_LOW_VARIATION  = ["col_a", "col_b", ...]   # manually confirmed drops
+
+# ── Column types ──────────────────────────────────────────────
+CAT_NUNIQUE_THRESHOLD = 20
+FORCE_NUMERIC         = []
+
+# ── Binning ───────────────────────────────────────────────────
+N_BINS            = 5
+BINNING_STRATEGY  = "quantile"
+CUSTOM_BINS       = {}           # e.g. {"age": [0, 18, 30, 50, 65, 100]}
+BINNING_FALLBACK  = "categorical"
+
+# ── OHE ───────────────────────────────────────────────────────
+DROP_FIRST     = False
+MAX_CATEGORIES = 5               # categories with < 5 rows -> '__rare__'
+MODE           = "keep"
+
+# ── __NULL__ feature handling ─────────────────────────────────
+DROP_NULL_FEATURES  = True
+NULL_GAIN_THRESHOLD = 0.001
+NULL_PERM_THRESHOLD = 0.0005""",
+        note="All parameters are at the top of train_pipeline.py. Change these to tune the pipeline.")
+
+    # ── 6. Hyperparameters (GridSearchCV) ─────────────────────
     hp_rows = [
         ["n_estimators", "Number of boosting rounds (trees)", "[100, 200, 300]"],
         ["max_depth", "Max tree depth (controls complexity)", "[3, 5, 7]"],
@@ -1127,7 +1494,31 @@ def create_internal_deck():
         col_widths=[Inches(3), Inches(5.5), Inches(3.5)],
     )
 
-    # ── 7. Feature Importance & Auto-Flag ─────────────────────────
+    # ── Code: PARAM_GRID ──────────────────────────────────────
+    _code_slide(prs, "Code: Hyperparameter Grid & Feature Importance Config", """\
+# ── GridSearchCV ──────────────────────────────────────────────
+CV_FOLDS = 5
+SCORING  = "roc_auc"
+
+PARAM_GRID = {
+    "n_estimators":     [100, 200, 300],    # more trees = slower but often better
+    "max_depth":        [3, 5, 7],          # deeper = more complex; risk overfitting
+    "learning_rate":    [0.01, 0.05, 0.1],  # lower = needs more trees but generalizes better
+    "subsample":        [0.8, 1.0],         # row sampling per tree (regularization)
+    "colsample_bytree": [0.8, 1.0],         # feature sampling per tree (regularization)
+    "min_child_weight": [1, 3, 5],          # min obs per leaf (prevents overfitting)
+}
+# Total combinations: 3 * 3 * 3 * 2 * 2 * 3 = 324
+# Each tested with 5-fold CV = 1,620 model fits per training call
+
+# ── Feature importance ────────────────────────────────────────
+GAIN_TOP_PCT       = 50      # suspicious if gain >= top 50th percentile
+PERM_MIN_THRESHOLD = 0.001   # ... AND perm importance < this
+ADD_BACK_FEATURES  = []      # override: never drop these
+EXTRA_DROP_FEATURES = []     # hard-coded: always drop these""",
+        note="324 combinations x 5 folds x 2 models = 3,240 total fits. This is the slowest step.")
+
+    # ── 7. Feature Importance & Auto-Flag ─────────────────────
     _content_slide(prs, "6. Feature Importance — How Suspicious Features Are Detected", [
         "**Two independent importance measures are computed after training:**",
         "",
@@ -1151,7 +1542,7 @@ def create_internal_deck():
         "**EXTRA_DROP_FEATURES:** Hard-coded additional drops (domain knowledge)",
     ])
 
-    # ── 8. Deployment / Scoring Pipeline ──────────────────────────
+    # ── 8. Deployment / Scoring Pipeline ──────────────────────
     _content_slide(prs, "7. Deployment — score_new_data() Function", [
         "**Purpose:** Apply the exact same transformations to new data and produce predictions.",
         "",
@@ -1173,11 +1564,48 @@ def create_internal_deck():
             "no train/serve skew.",
     ])
 
-    # ── 9. Artefact Directory ─────────────────────────────────────
+    # ── Code: score_new_data ──────────────────────────────────
+    _code_slide(prs, "Code: score_new_data() — Deployment Scoring", """\
+def score_new_data(raw_df, artefact_dir, ext_raw_df=None,
+                   model_file="xgb_model.joblib",
+                   features_file="final_features.json"):
+    \"\"\"Score raw data using saved artefacts. Identical to deployment.\"\"\"
+
+    # Load all saved artefacts
+    model     = joblib.load(os.path.join(artefact_dir, model_file))
+    ohe_enc   = joblib.load(os.path.join(artefact_dir, "ohe_encoder.joblib"))
+    bin_edges = json.load(open(os.path.join(artefact_dir, "bin_edges.json")))
+    col_meta  = json.load(open(os.path.join(artefact_dir, "column_metadata.json")))
+    rare_map  = json.load(open(os.path.join(artefact_dir, "rare_mappings.json")))
+    features  = json.load(open(os.path.join(artefact_dir, features_file)))
+
+    # Apply same transformations as training:
+    # 1. Fill nulls with '__NULL__', apply rare mappings
+    for col in encode_cols:
+        if col in rare_map:
+            raw_df[col] = raw_df[col].apply(lambda x: "__rare__" if x in rare_map[col] else x)
+
+    # 2. Apply saved bin edges (same boundaries)
+    for col, info in bin_edges.items():
+        raw_df[col + "_bin"] = pd.cut(raw_df[col], bins=info["edges"], labels=False)
+
+    # 3. OHE transform (handle_unknown='ignore' for new categories)
+    encoded = ohe_enc.transform(raw_df[encode_cols])
+
+    # 4. Align to exact features the model expects
+    for f in features:
+        if f not in scored_df.columns: scored_df[f] = 0   # missing → 0
+    scored_df = scored_df[features]
+
+    # 5. Predict
+    return model.predict_proba(scored_df)[:, 1]""",
+        note="handle_unknown='ignore' means unseen categories in new data produce all-zero OHE columns (safe).")
+
+    # ── 9. Artefact Directory ─────────────────────────────────
     artefact_rows = [
         ["bin_edges.json", "Bin boundaries for numerical columns"],
         ["ohe_encoder.joblib", "Fitted OneHotEncoder (sklearn)"],
-        ["rare_mappings.json", "Category → __rare__ mappings"],
+        ["rare_mappings.json", "Category -> __rare__ mappings"],
         ["column_metadata.json", "Cat/num classification, all column lists"],
         ["column_tracking.json", "Full audit trail: which columns survived each step"],
         ["xgb_model_main_only.joblib", "Trained XGBoost (main features only)"],
@@ -1198,7 +1626,7 @@ def create_internal_deck():
         col_widths=[Inches(4.5), Inches(7.5)],
     )
 
-    # ── 10. External / InsightGenie Pipeline ──────────────────────
+    # ── 10. External / InsightGenie Pipeline ──────────────────
     _content_slide(prs, "9. InsightGenie (External) Features Pipeline", [
         "**Separate but identical preprocessing** to main columns:",
         "  - Own null threshold (EXT_NULL_THRESHOLD_PCT, default same as main)",
@@ -1220,7 +1648,43 @@ def create_internal_deck():
             "industry_confidence, sentiment, trust_score, etc.)",
     ])
 
-    # ── 11. Suggestions & Best Practices ──────────────────────────
+    # ── Code: Progress tracker ────────────────────────────────
+    _code_slide(prs, "Code: PipelineProgress — Progress Bar & Timing", """\
+class PipelineProgress:
+    \"\"\"Lightweight progress bar + per-step timing tracker.\"\"\"
+
+    STEPS = [
+        "Load data & holdout split",  "Column selection",
+        "Null analysis",              "Variation analysis",
+        "Identify column types",      "Binning",
+        "One-hot encoding",           "External columns pipeline",
+        "Save transformation artefacts",
+        "Train - Main model",         "Train - Augmented model",
+        "Build reports & trail CSV",
+    ]
+    BAR_WIDTH = 40
+
+    def start_step(self, step_idx):
+        \"\"\"Begin a numbered pipeline step.\"\"\"
+        if self._step_start is not None and self.current < len(self.STEPS):
+            self.step_times[self.STEPS[self.current]] = time.time() - self._step_start
+        self.current = step_idx
+        self._step_start = time.time()
+        self._print_bar()
+
+    def _print_bar(self):
+        done = self.current
+        filled = int(self.BAR_WIDTH * (done / self.total))
+        bar = "\\u2588" * filled + "\\u2591" * (self.BAR_WIDTH - filled)
+        elapsed = time.time() - self._pipeline_start
+        eta = elapsed / done * (self.total - done) if done > 0 else 0
+        print(f"  [{bar}] {done}/{self.total}  ETA {eta:.0f}s", flush=True)
+
+    # Output example:
+    #   [████████████████░░░░░░░░░░░░░░░░░░░░░░░░]  5/12  ETA 3m 22s  │ Binning""",
+        note="No external dependencies — pure Python. Timing saved to artefacts/pipeline_timing.json.")
+
+    # ── 11. Suggestions & Best Practices ──────────────────────
     _content_slide(prs, "10. Suggestions & Best Practices", [
         "**For the team (development):**",
         "  - Run the pipeline with HOLDOUT_PCT=0.15 to always have an unseen test set",
@@ -1242,7 +1706,7 @@ def create_internal_deck():
         "  - Version artefacts directory with each retrain (artefacts_v1, _v2, ...)",
     ])
 
-    # ── 12. Quick Reference — Config Cheat Sheet ─────────────────
+    # ── 12. Quick Reference — Config Cheat Sheet ─────────────
     _content_slide(prs, "11. Quick Reference — What to Change When", [
         "**'Model AUC is too low':**",
         "  - Expand PARAM_GRID (add more n_estimators, try learning_rate=0.005)",
@@ -1265,10 +1729,10 @@ def create_internal_deck():
         "  - Investigate why so many nulls exist in the source data",
     ])
 
-    # ── 13. Thank You ─────────────────────────────────────────────
+    # ── 13. Thank You ─────────────────────────────────────────
     _title_slide(prs, "Internal Pipeline Guide", "For questions, refer to artefacts/ or this deck")
 
-    # ── Save ──────────────────────────────────────────────────────
+    # ── Save ──────────────────────────────────────────────────
     prs.save(INTERNAL_OUTPUT_PATH)
     print(f"Internal guide saved to: {INTERNAL_OUTPUT_PATH}")
     print(f"Total slides: {len(prs.slides)}")
